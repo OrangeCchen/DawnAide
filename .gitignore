@@ -1,0 +1,104 @@
+# ============================================
+# 环境与依赖
+# ============================================
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+# ============================================
+# 测试文件
+# ============================================
+test_*.py
+*_test.py
+tests/
+test/
+*.test.py
+coverage.xml
+.coverage.*
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Node
+frontend/node_modules/
+frontend/pnpm-lock.yaml
+frontend/yarn.lock
+frontend/package-lock.json
+
+# ============================================
+# 配置文件（敏感信息）
+# ============================================
+.env
+.env.local
+.env.*.local
+.env.example  # 如果不需要提交示例文件
+*.pem
+*.key
+credentials.json
+secrets.yaml
+secrets.yml
+config/credentials.yml
+
+# ============================================
+# IDE 配置
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Cursor
+.cursor/
+.cursorignore
+
+# ============================================
+# 数据文件
+# ============================================
+data/
+*.db
+*.sqlite
+*.sqlite3
+qdrant_storage/
+*.qdrant
+
+# ============================================
+# 日志
+# ============================================
+logs/
+*.log
+
+# ============================================
+# 临时文件
+# ============================================
+tmp/
+temp/
+*.tmp
+.cache/
