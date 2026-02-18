@@ -1,0 +1,121 @@
+name: Build Desktop Client
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '20'
+
+jobs:
+  build-runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel
+          - os: macos-13
+            target: macos-x64
+            rust-target: x86_64-apple-darwin
+          # macOS Apple Silicon
+          - os: macos-14
+            target: macos-arm64
+            rust-target: aarch64-apple-darwin
+          # Windows
+          - os: windows-latest
+            target: windows-x64
+            rust-target: x86_64-pc-windows-msvc
+          # Linux x64（兼容麒麟/统信 x86_64 版）
+          - os: ubuntu-22.04
+            target: linux-x64
+            rust-target: x86_64-unknown-linux-gnu
+          # Linux ARM64（兼容麒麟 ARM 版）
+          - os: ubuntu-22.04
+            target: linux-arm64
+            rust-target: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      # Linux 依赖（Tauri 构建所需）
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # Linux ARM64 交叉编译工具链
+      - name: Setup ARM64 Cross Compilation
+        if: matrix.target == 'linux-arm64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      # 构建 Runtime sidecar
+      - name: Build Runtime Sidecar
+        shell: bash
+        run: |
+          cd client/runtime
+          pip install -r requirements.txt pyinstaller
+          pyinstaller --onefile --name "agentteams-runtime-${{ matrix.rust-target }}" \
+            --add-data "services:services" \
+            --add-data "store:store" \
+            --add-data "config.py:." \
+            --hidden-import "uvicorn.logging" \
+            --hidden-import "uvicorn.lifespan" \
+            --hidden-import "uvicorn.lifespan.on" \
+            --hidden-import "uvicorn.protocols" \
+            --hidden-import "uvicorn.protocols.http" \
+            --hidden-import "uvicorn.protocols.http.auto" \
+            --hidden-import "uvicorn.protocols.websockets" \
+            --hidden-import "uvicorn.protocols.websockets.auto" \
+            --hidden-import "chromadb" \
+            --clean --noconfirm \
+            main.py
+          mkdir -p ../desktop/src-tauri/sidecar
+          cp dist/agentteams-runtime-* ../desktop/src-tauri/sidecar/
+
+      # 构建 Tauri 桌面应用
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client/desktop
+          tauriScript: npm run tauri
+          args: --target ${{ matrix.rust-target }}
+
+      # 上传构建产物
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentteams-desktop-${{ matrix.target }}
+          path: |
+            client/desktop/src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*
+          retention-days: 30

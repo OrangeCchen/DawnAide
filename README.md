@@ -11,25 +11,51 @@
 - 联网搜索结果自动生成引用角标，最终汇总保留可溯源引用来源列表。
 - 第一轮对话结束后（或用户手动终止后）自动生成 ≤10 字的会话标题。
 - 支持会话持久化、场景模板、公文导出、iMessage 双向机器人等能力。
+- **支持 B/S（浏览器）与 C/S（桌面客户端）双模式运行**，桌面端兼容 macOS、Windows、信创系统（麒麟、统信 UOS）。
 
 ---
 
 ## 2. 总体架构
 
-系统采用前后端分离开发、后端可托管前端静态资源的架构：
+系统采用 **B/S + C/S 双模架构**，两种模式共用同一个 Vue 前端和 FastAPI 后端：
 
 - **前端**：Vue 3 + TypeScript + Pinia + Vite（端口 `3000`）
 - **后端**：FastAPI + WebSocket + asyncio（默认端口 `8000`）
 - **模型层**：统一适配 `OpenAI / Spark / Ollama`
 - **持久化**：SQLite（`data/agent_teams.db`）
 - **配置数据**：YAML（角色、技能、方法论、场景）
+- **桌面客户端**：Tauri v2 桌面壳体 + Python Client Runtime（端口 `19800`）
 
-运行时主链路：
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    访问方式（三选一）                         │
+│   浏览器 :8000（生产）  浏览器 :3000（开发）  Tauri 桌面窗口  │
+└─────────────────────────┬───────────────────────────────────┘
+                          │ 共用同一个 Vue 3 前端
+┌─────────────────────────▼───────────────────────────────────┐
+│                 FastAPI 后端 (端口 8000)                     │
+│   Engine / team-lead / MessageBus / SkillRegistry / Memory  │
+│   + Local Capability Adapter（可选，连接本地 Runtime）        │
+└──────────────┬──────────────────────────────────────────────┘
+               │ localhost:19800（仅 C/S 模式）
+┌──────────────▼──────────────────────────────────────────────┐
+│           Client Runtime（可选，本机 Python 服务）            │
+│   File Service | Index Service | Retrieval | ChromaDB       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+运行时主链路（B/S 部分，与原有一致）：
 
 1. 前端提交任务到 `POST /api/tasks`
 2. 后端创建后台异步任务并交由 `Engine -> team-lead` 处理
 3. `team-lead` 动态调度专家执行，结果通过 `MessageBus` 广播
 4. `WebSocket /ws` 将消息流推送到前端，前端增量渲染消息卡片
+
+C/S 扩展链路（可选，不影响 B/S 主流程）：
+
+5. 后端通过 `LocalClientAdapter` 探测本地 Runtime 是否在线
+6. 在线时可调用本地文件读取、知识库检索等能力
+7. 不在线时自动降级，所有已有功能不受影响
 
 ---
 
@@ -77,7 +103,10 @@ AgentTeams/
 │       ├── doc_exporter.py       # Markdown → Word 导出
 │       ├── file_reader.py        # 本地文件/目录读取
 │       ├── imessage.py           # iMessage 发送（macOS AppleScript）
-│       └── imessage_bot.py       # iMessage 双向机器人（监听+回复）
+│       ├── imessage_bot.py       # iMessage 双向机器人（监听+回复）
+│       ├── local_client_adapter.py  # 【C/S】本地 Runtime 通信适配器
+│       ├── local_kb_tool.py         # 【C/S】本地知识库检索工具
+│       └── local_file_tool.py       # 【C/S】本地文件远程读取工具
 ├── frontend/                     # 前端 Vue 工程
 │   ├── vite.config.ts            # 前端端口与 API/WS 代理配置
 │   ├── src/
@@ -85,6 +114,21 @@ AgentTeams/
 │   │   ├── api/websocket.ts      # WS 客户端与重连
 │   │   ├── stores/teamStore.ts   # 团队、消息、流式状态管理
 │   │   └── components/           # ChatArea / TeamSidebar / MessageCard 等组件
+├── client/                       # 【C/S】桌面客户端（新增，独立目录）
+│   ├── runtime/                  # Client Runtime 本地能力服务
+│   │   ├── main.py               # FastAPI 入口（端口 19800）
+│   │   ├── config.py             # Runtime 配置
+│   │   ├── requirements.txt      # 独立依赖
+│   │   ├── services/             # file / index / retrieval / permission 服务
+│   │   └── store/                # ChromaDB 本地向量库
+│   ├── desktop/                  # Tauri v2 桌面应用壳体
+│   │   ├── src-tauri/            # Rust 源码与 Tauri 配置
+│   │   ├── src/                  # 桌面端入口 TS
+│   │   └── package.json          # 前端依赖
+│   └── scripts/                  # 构建与开发脚本
+│       ├── dev.sh                # 一键启动开发环境
+│       ├── build-runtime.sh      # Runtime PyInstaller 打包
+│       └── build-desktop.sh      # 完整桌面应用构建
 ├── data/
 │   ├── roles/                    # 角色定义 YAML
 │   ├── skills/                   # 技能定义 YAML
@@ -92,6 +136,8 @@ AgentTeams/
 │   ├── scenes/                   # 场景模板 YAML
 │   └── exports/                  # 导出的 Word 文档目录
 ├── .env.example                  # 环境变量模板
+├── .github/workflows/
+│   └── build-desktop.yml         # 【C/S】多平台 CI 自动构建
 └── pyproject.toml                # 后端依赖与打包配置
 ```
 
@@ -137,7 +183,32 @@ AgentTeams/
   - 任务提交后创建后台 `asyncio.Task` 并维护运行中任务映射。
   - 终止任务时取消对应 `asyncio.Task`，清理流式状态，并触发兜底重命名。
 
-### 3.3 前端核心模块职责
+### 3.3 C/S 客户端模块职责
+
+- `src/tools/local_client_adapter.py`
+  - 后端与本地 Client Runtime 通信的统一适配器。
+  - 内置熔断器（连续 3 次失败 → 熔断 60 秒 → 自动半开恢复）。
+  - 内置健康检查缓存（30 秒内不重复探测）。
+  - 所有请求 10 秒超时，失败返回 `None`，上层工具自行降级。
+
+- `src/tools/local_kb_tool.py`
+  - 对接 `LocalClientAdapter`，为 Agent 提供本地知识库检索/索引能力。
+  - Runtime 不可用时返回友好提示，不抛异常、不阻断主流程。
+
+- `src/tools/local_file_tool.py`
+  - 通过 Runtime 读取用户桌面端本地文件，与现有 `file_reader.py` 完全独立。
+
+- `client/runtime/`
+  - 独立的 Python FastAPI 服务，运行在 `127.0.0.1:19800`。
+  - 提供本地文件读取（txt/md/docx/pdf）、目录浏览、知识库索引（ChromaDB）、向量检索。
+  - 目录白名单授权机制，默认拒绝所有路径访问。
+  - 数据持久化到 `~/.agentteams/`。
+
+- `client/desktop/`
+  - Tauri v2 桌面应用壳体，直接加载后端提供的 Web 界面（与浏览器看到的完全相同）。
+  - 支持 macOS / Windows / Linux（麒麟、统信）多平台构建。
+
+### 3.4 前端核心模块职责
 
 - `frontend/src/components/ChatArea.vue`
   - 任务输入区、文件路径附加、审查开关、模型切换、终止任务按钮。
@@ -406,9 +477,11 @@ trigger:
 
 ---
 
-## 7. 前后端启动说明
+## 7. 启动说明
 
-### 7.1 开发模式（推荐）
+系统支持三种运行模式，按需选择：
+
+### 7.1 B/S 开发模式
 
 需要两个终端分别启动后端与前端。
 
@@ -464,18 +537,99 @@ npm run dev
 
 说明：`frontend/vite.config.ts` 已将 `/api` 与 `/ws` 代理到 `http://localhost:8000`。
 
-### 7.2 一体化部署模式（后端托管前端静态资源）
+### 7.2 B/S 一体化部署模式（后端托管前端）
 
 ```bash
 cd frontend
 npm install
-npm run build
+npx vite build    # 构建前端
 
 cd ..
 python -m src.main
 ```
 
 此时后端会托管 `frontend/dist`，通过后端端口统一访问（默认 `http://localhost:8000`）。
+
+### 7.3 C/S 桌面客户端模式
+
+在 B/S 基础上，额外启动本地能力服务和桌面窗口。
+
+#### 方式 A：一键启动
+
+```bash
+source .venv/bin/activate
+./client/scripts/dev.sh
+```
+
+#### 方式 B：分别启动（3 个终端）
+
+**终端 1 — 后端服务（端口 8000）**
+
+```bash
+source .venv/bin/activate
+python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+**终端 2 — Client Runtime 本地能力服务（端口 19800）**
+
+```bash
+cd client/runtime
+pip install -r requirements.txt   # 首次需要
+python main.py
+```
+
+**终端 3 — Tauri 桌面窗口（可选，需要 Rust 环境）**
+
+```bash
+cd client/desktop
+npm install                       # 首次需要
+npm run tauri:dev
+```
+
+> 如果没有 Rust 环境，可以跳过终端 3，直接用浏览器访问 http://localhost:8000。只要终端 2 的 Runtime 在运行，后端即可调用本地能力。
+
+验证 Runtime 状态：
+
+```bash
+curl http://127.0.0.1:19800/health
+# 预期：{"status":"ok","version":"0.1.0","capabilities":["file","kb","permission"]}
+```
+
+### 7.4 三种模式对比
+
+| 模式 | 需要启动 | 访问方式 | 本地能力 |
+|------|---------|---------|---------|
+| B/S 开发 | 后端 + 前端 dev | 浏览器 `:3000` | ❌ |
+| B/S 一体化 | 后端（托管前端） | 浏览器 `:8000` | ❌ |
+| C/S 桌面 | 后端 + Runtime + Tauri | Tauri 窗口 或 浏览器 `:8000` | ✅ |
+
+所有模式共用**同一个 Vue 前端**和**同一个 FastAPI 后端**，区别仅在于是否运行 Client Runtime 和 Tauri 桌面壳体。未启动 Runtime 时，系统自动降级为纯 B/S 行为，不报错。
+
+### 7.5 C/S 桌面应用构建（生产打包）
+
+```bash
+# 完整构建（Runtime sidecar + Tauri 桌面应用）
+cd client/scripts
+./build-desktop.sh
+
+# 仅构建 Runtime
+./build-runtime.sh
+
+# 指定目标平台
+./build-runtime.sh --target linux-x64
+```
+
+#### 跨平台支持
+
+| 平台 | 架构 | 打包格式 |
+|------|------|---------|
+| macOS Intel | x86_64 | `.dmg` / `.app` |
+| macOS Apple Silicon | ARM64 | `.dmg` / `.app` |
+| Windows 10/11 | x86_64 | `.msi` / `.exe` (NSIS) |
+| 麒麟 V10 | x86_64 / ARM64 | `.deb` / `.AppImage` |
+| 统信 UOS | x86_64 | `.deb` / `.AppImage` |
+
+CI/CD 通过 `.github/workflows/build-desktop.yml` 自动完成全平台构建。
 
 ---
 
@@ -567,6 +721,16 @@ python -m src.main
   - 本项目所有 Python 依赖（含工具模块所需的 `ddgs`、`beautifulsoup4`、`python-docx`）均已声明在 `pyproject.toml` 中。
   - 首次安装或重建虚拟环境后，执行一次 `pip install -e .` 即可安装全部依赖，无需逐个手动安装。
   - 若 pip 遇到 SSL 证书错误，可加 `--trusted-host pypi.org --trusted-host files.pythonhosted.org` 参数。
+
+- **Tauri 桌面客户端启动失败**
+  - `cargo: No such file or directory`：需先安装 Rust，执行 `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`。
+  - `sidecar ... doesn't exist`：开发模式不需要 sidecar，检查 `tauri.conf.json` 中是否误加了 `externalBin`。
+  - 窗口空白：确认后端（端口 8000）已启动，`tauri.conf.json` 中 `devUrl` 应为 `http://localhost:8000`。
+
+- **Client Runtime 相关问题**
+  - Runtime 无法启动：检查端口 19800 是否被占用，确认 `client/runtime/requirements.txt` 中的依赖已安装。
+  - 本地文件读取返回"路径未授权"：需先调用 `POST /permissions/grant` 授权目录。
+  - Runtime 不在线时不影响任何现有功能，所有调用自动降级。
 
 ---
 

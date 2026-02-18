@@ -102,3 +102,18 @@ tmp/
 temp/
 *.tmp
 .cache/
+docs/
+# ============================================
+# 客户端桌面应用（Tauri）
+# ============================================
+client/desktop/node_modules/
+client/desktop/dist/
+client/desktop/src-tauri/target/
+client/desktop/src-tauri/sidecar/
+client/desktop/package-lock.json
+
+# Client Runtime 构建产物
+client/runtime/dist/
+client/runtime/build/
+client/runtime/__pycache__/
+client/runtime/*.spec
