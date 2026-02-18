@@ -124,6 +124,34 @@ const canGenerate = computed(() => {
   return missingRequiredLabels.value.length === 0
 })
 
+const fileOrganizeScene: SceneCategory = {
+  name: 'file_organize',
+  display_name: '文件整理',
+  icon: '🗂️',
+  description: '智能整理和管理本地文件',
+  methodology: '',
+  children: [
+    {
+      id: 'file_organize_plan',
+      name: '整理方案生成',
+      description: '根据你的目录结构和目标，生成可执行整理方案',
+      fields: [
+        { id: 'folder_scope', label: '待整理目录', type: 'text', placeholder: '例如：~/Documents/项目资料', required: true },
+        { id: 'organize_goal', label: '整理目标', type: 'text', placeholder: '例如：按项目和日期分类', required: true },
+        { id: 'output_format', label: '输出形式', type: 'select', required: false, options: ['仅建议方案', '含命名规则', '含执行步骤'] },
+      ],
+    },
+  ],
+}
+
+const displayScenes = computed(() => {
+  const hasFileOrganize = scenes.value.some(
+    scene => scene.name === fileOrganizeScene.name || scene.display_name === fileOrganizeScene.display_name
+  )
+  if (hasFileOrganize) return scenes.value
+  return [fileOrganizeScene, ...scenes.value]
+})
+
 function isFieldFilled(fieldId: string) {
   const val = formData.value[fieldId]
   return Boolean(val && val.trim())
@@ -179,12 +207,14 @@ function handleSubmit() {
       </div>
       <div class="scene-grid" v-if="!loading">
         <button
-          v-for="cat in scenes"
+          v-for="cat in displayScenes"
           :key="cat.name"
           class="scene-card"
           @click="selectCategory(cat)"
         >
-          <span class="scene-card-icon">{{ cat.icon }}</span>
+          <span class="scene-card-icon-wrap">
+            <span class="scene-card-icon">{{ cat.icon }}</span>
+          </span>
           <span class="scene-card-name">{{ cat.display_name }}</span>
           <span class="scene-card-desc">{{ cat.description }}</span>
         </button>
@@ -310,34 +340,44 @@ function handleSubmit() {
 .scene-panel {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 20px 20px 24px;
+  align-items: flex-start;
+  padding: 18px 20px 16px;
   width: 100%;
-  max-width: 960px;
+  max-width: 920px;
   margin: 0 auto;
   box-sizing: border-box;
+  background: #f8f8f8;
+  border-radius: 18px;
 }
 
 .scene-header {
-  text-align: center;
-  margin-bottom: 28px;
+  text-align: left;
+  margin-bottom: 16px;
 }
 
 .scene-logo {
-  margin-bottom: 12px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #effaf4;
+  margin-bottom: 10px;
 }
 
 .scene-title {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: clamp(22px, 2vw, 30px);
+  font-weight: 700;
+  line-height: 1.2;
+  color: #171717;
   margin-bottom: 6px;
 }
 
 .scene-desc {
-  font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.5;
+  font-size: clamp(12px, 1.2vw, 16px);
+  color: #7a7a7a;
+  line-height: 1.45;
 }
 
 .scene-grid {
@@ -345,50 +385,95 @@ function handleSubmit() {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 .scene-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 16px;
+  padding: 14px 14px 12px;
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
+  border: 1px solid #e6e6e6;
+  border-radius: 12px;
+  background: #f7f7f7;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s ease;
   text-align: left;
 }
 
 .scene-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-active);
-  box-shadow: var(--shadow-sm);
+  border-color: #cfd5d1;
+  background: #f4f4f4;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+}
+
+.scene-card-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid #e6e6e6;
+  background: #eef8f2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 10px;
 }
 
 .scene-card-icon {
-  font-size: 24px;
-  margin-bottom: 8px;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .scene-card-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 4px;
+  font-size: clamp(15px, 1.4vw, 20px);
+  font-weight: 700;
+  color: #171717;
+  margin-bottom: 6px;
+  line-height: 1.25;
 }
 
 .scene-card-desc {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: clamp(11px, 1.1vw, 14px);
+  color: #777777;
   line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .scene-hint {
-  font-size: 12px;
-  color: var(--text-light);
+  font-size: clamp(11px, 1vw, 13px);
+  color: #999999;
+}
+
+@media (max-width: 1024px) {
+  .scene-panel {
+    padding: 14px 14px 14px;
+    border-radius: 16px;
+  }
+
+  .scene-title {
+    font-size: 22px;
+  }
+
+  .scene-desc {
+    font-size: 13px;
+  }
+
+  .scene-card-name {
+    font-size: 16px;
+  }
+
+  .scene-card-desc {
+    font-size: 12px;
+  }
+
+  .scene-hint {
+    font-size: 12px;
+  }
 }
 
 /* 子类型选择 */
