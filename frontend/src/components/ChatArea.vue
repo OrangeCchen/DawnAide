@@ -132,10 +132,27 @@ interface ModelInfo {
   id: string
   name: string
   desc: string
+  provider: string
+}
+interface ModelGroup {
+  label: string
+  provider: string
+  models: ModelInfo[]
 }
 const models = ref<ModelInfo[]>([])
 const currentModel = ref('')
 const showModelPicker = ref(false)
+
+const modelGroups = computed<ModelGroup[]>(() => {
+  const groups: Record<string, ModelGroup> = {}
+  const labelMap: Record<string, string> = { openai: '通义千问', spark: '讯飞星火' }
+  for (const m of models.value) {
+    const p = m.provider || 'openai'
+    if (!groups[p]) groups[p] = { label: labelMap[p] || p, provider: p, models: [] }
+    groups[p].models.push(m)
+  }
+  return Object.values(groups)
+})
 
 async function fetchModels() {
   try {
@@ -549,19 +566,22 @@ watch(
           <!-- 下拉列表 -->
           <Transition name="dropdown">
             <div v-if="showModelPicker" class="model-dropdown">
-              <button
-                v-for="m in models"
-                :key="m.id"
-                @click="switchModel(m.id)"
-                class="model-option"
-                :class="{ selected: m.id === currentModel }"
-              >
-                <span class="model-option-name">{{ m.name }}</span>
-                <span class="model-option-desc">{{ m.desc }}</span>
-                <svg v-if="m.id === currentModel" width="14" height="14" viewBox="0 0 14 14" fill="none" class="check-icon">
-                  <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </button>
+              <div v-for="group in modelGroups" :key="group.provider" class="model-group">
+                <div class="model-group-label">{{ group.label }}</div>
+                <button
+                  v-for="m in group.models"
+                  :key="m.id"
+                  @click="switchModel(m.id)"
+                  class="model-option"
+                  :class="{ selected: m.id === currentModel }"
+                >
+                  <span class="model-option-name">{{ m.name }}</span>
+                  <span class="model-option-desc">{{ m.desc }}</span>
+                  <svg v-if="m.id === currentModel" width="14" height="14" viewBox="0 0 14 14" fill="none" class="check-icon">
+                    <path d="M3 7.5l3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
             </div>
           </Transition>
 
@@ -1003,7 +1023,7 @@ watch(
   bottom: calc(100% + 6px);
   left: 0;
   min-width: 280px;
-  max-height: 360px;
+  max-height: 420px;
   overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1011,6 +1031,21 @@ watch(
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
   z-index: 100;
   padding: 6px;
+}
+
+.model-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 8px 12px 4px;
+  margin-top: 2px;
+}
+
+.model-group-label:first-child {
+  margin-top: 0;
+  padding-top: 4px;
 }
 
 .model-option {

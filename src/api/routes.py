@@ -533,7 +533,7 @@ async def create_role(req: CreateRoleRequest):
 # ---- Model Routes ----
 
 
-# 千问开源模型列表（DashScope 支持的模型）
+# 千问开源模型列表（DashScope / OpenAI-compatible 接口）
 QWEN_MODELS = [
     {"id": "qwen-plus", "name": "Qwen-Plus", "desc": "通用增强 · 均衡性价比"},
     {"id": "qwen-max", "name": "Qwen-Max", "desc": "旗舰模型 · 最强推理"},
@@ -547,6 +547,24 @@ QWEN_MODELS = [
     {"id": "qwen2.5-32b-instruct", "name": "Qwen2.5-32B", "desc": "开源 32B · 均衡"},
 ]
 
+# 讯飞星火大模型列表（id 即为 domain 参数值）
+SPARK_MODELS = [
+    {"id": "4.0Ultra",    "name": "Spark 4.0 Ultra", "desc": "旗舰版 · 最强推理【推荐】"},
+    {"id": "max-32k",     "name": "Spark Max-32K",   "desc": "长上下文 · 32K tokens"},
+    {"id": "generalv3.5", "name": "Spark Max",        "desc": "通用增强 · 均衡性价比"},
+    {"id": "pro-128k",    "name": "Spark Pro-128K",  "desc": "超长上下文 · 128K tokens"},
+    {"id": "generalv3",   "name": "Spark Pro",        "desc": "专业版 · 高性能"},
+    {"id": "lite",        "name": "Spark Lite",       "desc": "轻量版 · 极速响应"},
+    {"id": "kjwx",        "name": "科技文献大模型",    "desc": "论文问答 · 学术写作专项"},
+]
+
+# provider -> (模型列表, 对应 .env key)
+_PROVIDER_META: dict[str, tuple[list, str]] = {
+    "openai": (QWEN_MODELS, "OPENAI_MODEL"),
+    "spark":  (SPARK_MODELS, "SPARK_MODEL"),
+    "ollama": ([], "OLLAMA_MODEL"),
+}
+
 
 class SwitchModelRequest(BaseModel):
     model_id: str
@@ -554,55 +572,104 @@ class SwitchModelRequest(BaseModel):
 
 @router.get("/models")
 async def list_models():
-    """获取可用模型列表和当前模型"""
+    """获取所有可用模型列表（含所有 provider）和当前模型"""
+    from src.config import get_settings
+
+    current_provider = get_settings().llm.provider
+
     engine = get_engine()
     current = ""
     if engine:
         lead = engine.get_agent("team-lead")
         if lead:
             current = lead.llm.model
-    return {"models": QWEN_MODELS, "current": current}
+
+    # 合并所有 provider 的模型，并附带 provider 标签供前端分组
+    all_models = (
+        [{"provider": "openai", **m} for m in QWEN_MODELS]
+        + [{"provider": "spark", **m} for m in SPARK_MODELS]
+    )
+
+    return {"models": all_models, "current": current, "provider": current_provider}
+
+
+def _update_env_keys(env_path, updates: dict[str, str]) -> None:
+    """批量更新 .env 文件中的若干 key=value 行"""
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    remaining = dict(updates)
+    new_lines = []
+    for line in lines:
+        replaced = False
+        for key, val in list(remaining.items()):
+            if line.startswith(f"{key}="):
+                new_lines.append(f"{key}={val}")
+                del remaining[key]
+                replaced = True
+                break
+        if not replaced:
+            new_lines.append(line)
+    for key, val in remaining.items():
+        new_lines.append(f"{key}={val}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 @router.post("/models/switch")
 async def switch_model(req: SwitchModelRequest):
-    """切换当前使用的模型"""
-    valid_ids = {m["id"] for m in QWEN_MODELS}
-    if req.model_id not in valid_ids:
+    """切换模型（支持跨 provider，运行时生效 + 持久化到 .env）"""
+    from src.config import get_settings, ROOT_DIR
+
+    # 确定目标 provider
+    spark_ids = {m["id"] for m in SPARK_MODELS}
+    qwen_ids = {m["id"] for m in QWEN_MODELS}
+
+    if req.model_id in spark_ids:
+        target_provider = "spark"
+        env_key = "SPARK_MODEL"
+    elif req.model_id in qwen_ids:
+        target_provider = "openai"
+        env_key = "OPENAI_MODEL"
+    else:
         raise HTTPException(status_code=400, detail=f"不支持的模型: {req.model_id}")
 
     engine = get_engine()
     if not engine:
         raise HTTPException(status_code=503, detail="引擎未就绪")
 
-    # 1. 更新运行时内存中的模型
+    llm_cfg = get_settings().llm
+
+    # 1. 重建 LLM 适配器（可能跨 provider）
     lead = engine.get_agent("team-lead")
     if lead:
-        lead.llm.model = req.model_id
-        logger.info(f"模型已切换（运行时）: {req.model_id}")
+        if target_provider == "spark":
+            from src.llm.spark_adapter import SparkAdapter
+            lead.llm = SparkAdapter(
+                app_id=llm_cfg.spark_app_id,
+                api_key=llm_cfg.spark_api_key,
+                api_secret=llm_cfg.spark_api_secret,
+                model=req.model_id,
+            )
+        else:
+            from src.llm.openai_adapter import OpenAIAdapter
+            lead.llm = OpenAIAdapter(
+                api_key=llm_cfg.openai_api_key,
+                base_url=llm_cfg.openai_base_url,
+                model=req.model_id,
+            )
+        logger.info(f"模型已切换（运行时）: provider={target_provider}, model={req.model_id}")
 
-    # 2. 持久化到 .env 文件
+    # 2. 持久化到 .env（更新 LLM_PROVIDER + 对应模型 key）
     try:
-        from src.config import ROOT_DIR
         env_path = ROOT_DIR / ".env"
         if env_path.exists():
-            lines = env_path.read_text(encoding="utf-8").splitlines()
-            new_lines = []
-            found = False
-            for line in lines:
-                if line.startswith("OPENAI_MODEL="):
-                    new_lines.append(f"OPENAI_MODEL={req.model_id}")
-                    found = True
-                else:
-                    new_lines.append(line)
-            if not found:
-                new_lines.append(f"OPENAI_MODEL={req.model_id}")
-            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-            logger.info(f"模型已持久化到 .env: {req.model_id}")
+            _update_env_keys(env_path, {
+                "LLM_PROVIDER": target_provider,
+                env_key: req.model_id,
+            })
+            logger.info(f"已持久化到 .env: LLM_PROVIDER={target_provider}, {env_key}={req.model_id}")
     except Exception as e:
-        logger.warning(f"持久化模型到 .env 失败（运行时已生效）: {e}")
+        logger.warning(f"持久化到 .env 失败（运行时已生效）: {e}")
 
-    return {"success": True, "model": req.model_id}
+    return {"success": True, "model": req.model_id, "provider": target_provider}
 
 
 # ---- iMessage Bot Routes ----

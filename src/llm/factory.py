@@ -24,9 +24,9 @@ def create_llm_adapter(settings: LLMSettings) -> LLMAdapter:
         from src.llm.spark_adapter import SparkAdapter
 
         adapter = SparkAdapter(
+            app_id=settings.spark_app_id,
             api_key=settings.spark_api_key,
             api_secret=settings.spark_api_secret,
-            base_url=settings.spark_base_url,
             model=settings.spark_model,
         )
     elif provider == "ollama":
