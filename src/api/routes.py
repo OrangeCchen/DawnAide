@@ -41,6 +41,7 @@ class SubmitTaskRequest(BaseModel):
     team_id: str = ""
     file_paths: list[str] = []  # 本地文件/目录路径，后端自动读取内容
     enable_review: bool = False  # 是否启用审查专家核查
+    expert_mode: bool = True    # 是否开启专家协作模式；False 时直接由LLM回答
     scene_type: str = ""  # 场景子模板 ID（如 meeting_notice）
     scene_category: str = ""  # 场景分类（如 official_writing）
     scene_form_data: dict[str, str] = {}  # 场景表单已采集的结构化字段
@@ -323,6 +324,7 @@ async def submit_task(req: SubmitTaskRequest):
     if req.file_paths:
         task_metadata["file_paths"] = req.file_paths
     task_metadata["enable_review"] = req.enable_review
+    task_metadata["expert_mode"] = req.expert_mode
     if req.scene_type:
         task_metadata["scene_type"] = req.scene_type
     if req.scene_category:
@@ -694,6 +696,75 @@ async def list_scenes():
 
     registry = get_scene_registry()
     return {"scenes": registry.to_list()}
+
+
+# ---- Refine Routes ----
+
+
+class RefineRequest(BaseModel):
+    team_id: str
+    current_content: str          # 当前文档全文
+    instruction: str              # 润色指令（如"把第二段改得更简洁"）
+    original_task: str = ""       # 原始任务描述（上下文）
+
+
+@router.post("/refine")
+async def refine_writing(req: RefineRequest):
+    """写作润色：对现有文档按指令进行局部或全局修改，流式推送结果。
+
+    结果通过 WebSocket 推送，接口本身立即返回 message_id 供前端订阅。
+    """
+    engine = get_engine()
+    if not engine:
+        raise HTTPException(status_code=503, detail="引擎未就绪")
+
+    lead = engine.get_agent("team-lead")
+    if not lead:
+        raise HTTPException(status_code=503, detail="team-lead 不可用")
+
+    bus = get_message_bus()
+
+    # 先发一条用户指令消息，让前端聊天侧显示
+    await bus.publish(Message(
+        type=MessageType.AGENT_MESSAGE,
+        sender="user",
+        team_id=req.team_id,
+        content=req.instruction,
+        metadata={"source": "refine_instruction"},
+    ))
+
+    context = (
+        f"你是一名专业写作编辑。用户有一篇文稿，需要你按照指令对其进行修改润色。\n\n"
+        f"【当前文稿全文】\n{req.current_content}\n\n"
+        f"【用户润色指令】\n{req.instruction}\n\n"
+    )
+    if req.original_task:
+        context += f"【原始写作背景】\n{req.original_task}\n\n"
+    context += (
+        "请直接输出修改后的完整文稿，不要输出解释、不要说'修改如下'之类的套话。"
+        "保持文档结构完整，未涉及修改的部分原样保留。"
+    )
+
+    # 后台异步执行，立即返回
+    import asyncio
+
+    async def _do_refine():
+        try:
+            await lead.think_stream(
+                user_input=context,
+                team_id=req.team_id,
+                msg_type=MessageType.TASK_RESULT,
+                system_prompt=(
+                    "你是专业写作编辑，擅长中文公文、邮件、报告的修改润色。"
+                    "严格按用户指令修改，未涉及部分原样保留，直接输出完整修改结果。"
+                ),
+                metadata={"refine_result": True},
+            )
+        except Exception as e:
+            logger.error(f"润色任务失败: {e}")
+
+    asyncio.create_task(_do_refine())
+    return {"status": "streaming", "team_id": req.team_id}
 
 
 # ---- Export Routes ----

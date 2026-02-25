@@ -36,17 +36,23 @@ interface MonitorPayload {
 
 const props = defineProps<{
   monitor: MonitorPayload
+  collapsed?: boolean
 }>()
 
 const emit = defineEmits<{
   confirmExecute: [workspace: string, organizeGoal: string]
   reAnalyze: [workspace: string, newGoal: string]
+  'update:collapsed': [value: boolean]
 }>()
 
 const todoOpen = ref(true)
 const artifactsOpen = ref(true)
 const skillsOpen = ref(false)
-const panelCollapsed = ref(false)
+
+const panelCollapsed = computed({
+  get: () => props.collapsed ?? false,
+  set: (val) => emit('update:collapsed', val),
+})
 const openingPath = ref('')
 const confirming = ref(false)
 // 用 suggestion id 追踪已选项，避免 goal 文本重复导致多选高亮

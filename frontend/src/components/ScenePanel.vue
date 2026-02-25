@@ -26,6 +26,10 @@ interface SceneCategory {
   children: SceneTemplate[]
 }
 
+const props = defineProps<{
+  initialCategory?: string
+}>()
+
 const emit = defineEmits<{
   (e: 'submit', payload: {
     description: string
@@ -57,6 +61,10 @@ onMounted(async () => {
     console.error('Failed to load scenes:', e)
   } finally {
     loading.value = false
+    // 数据加载完成后，若有指定初始分类则自动跳转
+    if (props.initialCategory) {
+      jumpToCategory(props.initialCategory)
+    }
   }
 })
 
@@ -164,6 +172,20 @@ const displayScenes = computed(() => {
   if (hasFileOrganize) return scenes.value
   return [fileOrganizeScene, ...scenes.value]
 })
+
+function jumpToCategory(categoryName: string) {
+  const cat = displayScenes.value.find(
+    c => c.name === categoryName || c.display_name === categoryName
+  )
+  if (cat) {
+    selectedCategory.value = cat
+    selectedTemplate.value = null
+    formData.value = {}
+    emit('context-change', { sceneCategory: cat.name, sceneType: '' })
+  }
+}
+
+defineExpose({ jumpToCategory })
 
 function isFieldFilled(fieldId: string) {
   const val = formData.value[fieldId]

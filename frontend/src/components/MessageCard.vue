@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import MarkdownIt from 'markdown-it'
 import type { Message } from '../types'
 import { useTeamStore } from '../stores/teamStore'
+import { highlightMissing } from '../utils/highlightMissing'
 
 const md = new MarkdownIt({
   html: false,
@@ -181,6 +182,20 @@ async function copyAsText() {
   }
 }
 
+function openEditorMode() {
+  const content = props.message.content || ''
+  if (!content.trim()) return
+  // 从聊天历史中找到原始用户任务描述
+  const teamMsgs = store.messages[props.message.team_id] || []
+  const userMsg = [...teamMsgs].reverse().find(m => m.sender === 'user')
+  store.openEditor({
+    content,
+    originalTask: userMsg?.content || '',
+    teamId: props.message.team_id,
+    messageId: props.message.id,
+  })
+}
+
 async function exportWord() {
   if (exporting.value) return
   exporting.value = true
@@ -329,6 +344,9 @@ const renderedContent = computed(() => {
     /<p>示例迁移：<\/p>\n?(<ul>[\s\S]*?<\/ul>)/,
     '<details class="inline-collapse"><summary>示例迁移（点击展开）</summary>\n$1</details>'
   )
+
+  // 高亮 LLM 插入的占位符（红色标记）
+  html = highlightMissing(html)
 
   return html
 })
@@ -541,6 +559,9 @@ function formatTokens(n: number): string {
       <div v-if="!isStreaming" class="msg-actions">
         <button class="action-btn" @click="copyAsText" :title="copySuccess ? '已复制' : '复制文本'">
           {{ copySuccess ? '✓ 已复制' : '📋 复制' }}
+        </button>
+        <button class="action-btn action-btn-edit" @click="openEditorMode" title="在写作编辑器中打开">
+          ✏️ 编辑
         </button>
         <button class="action-btn" @click="exportWord" :disabled="exporting">
           {{ exporting ? '导出中...' : '📄 Word' }}
@@ -1165,6 +1186,12 @@ function formatTokens(n: number): string {
   cursor: not-allowed;
 }
 
+.action-btn-edit:hover {
+  border-color: #34C759;
+  color: #34C759;
+  background: rgba(52, 199, 89, 0.06);
+}
+
 /* ====== 兜底 ====== */
 .msg-default {
   padding: 20px 28px;
@@ -1361,6 +1388,21 @@ function formatTokens(n: number): string {
 
 .markdown-body a:hover {
   text-decoration: underline;
+}
+
+/* ====== 占位符高亮 ====== */
+/* 使用 :deep 穿透 scoped，让 v-html 内部的 mark 能被匹配到 */
+.markdown-body :deep(mark.info-missing) {
+  background: rgba(255, 59, 48, 0.09);
+  color: #FF3B30;
+  border: 1px solid rgba(255, 59, 48, 0.22);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 600;
+  font-style: normal;
+  white-space: nowrap;
+  /* 覆盖浏览器默认黄色 mark 背景 */
+  -webkit-text-fill-color: #FF3B30;
 }
 
 /* ====== 流式输出光标 ====== */

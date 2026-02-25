@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useTeamStore } from './stores/teamStore'
 import { connect, onMessage } from './api/websocket'
 import TeamSidebar from './components/TeamSidebar.vue'
@@ -8,11 +8,14 @@ import ChatArea from './components/ChatArea.vue'
 import KnowledgeDraftPanel from './components/KnowledgeDraftPanel.vue'
 import NotesDraftPanel from './components/NotesDraftPanel.vue'
 import MemoryModal from './components/MemoryModal.vue'
+import WritingEditor from './components/WritingEditor.vue'
 
 const store = useTeamStore()
 const activeTab = ref<'conversation' | 'knowledge' | 'notes'>('conversation')
 const memoryVisible = ref(false)
 const chatPrefill = ref<{ id: number; text: string } | null>(null)
+
+const isEditorMode = computed(() => store.editorState.active)
 
 const tabItems: Array<{ key: 'conversation' | 'knowledge' | 'notes'; label: string }> = [
   { key: 'conversation', label: '对话' },
@@ -71,16 +74,21 @@ function handleFillChatInput(text: string) {
       </div>
     </div>
 
+    <!-- 写作编辑器（全屏覆盖主内容） -->
+    <WritingEditor v-if="isEditorMode" class="editor-fullscreen" />
+
     <!-- 主内容 -->
-    <div v-if="activeTab === 'conversation'" class="main-content">
-      <TeamSidebar class="sidebar" />
-      <MemberPanel class="info-panel" />
-      <ChatArea class="chat-panel" :external-prefill="chatPrefill" />
-    </div>
+    <template v-else>
+      <div v-if="activeTab === 'conversation'" class="main-content">
+        <TeamSidebar class="sidebar" />
+        <MemberPanel v-if="store.expertMode" class="info-panel" />
+        <ChatArea class="chat-panel" :external-prefill="chatPrefill" />
+      </div>
 
-    <KnowledgeDraftPanel v-else-if="activeTab === 'knowledge'" />
+      <KnowledgeDraftPanel v-else-if="activeTab === 'knowledge'" />
 
-    <NotesDraftPanel v-else @fill-chat-input="handleFillChatInput" />
+      <NotesDraftPanel v-else @fill-chat-input="handleFillChatInput" />
+    </template>
 
     <MemoryModal v-if="memoryVisible" @close="memoryVisible = false" />
   </div>
@@ -183,6 +191,12 @@ function handleFillChatInput(text: string) {
 .memory-btn:hover {
   border-color: var(--accent-color);
   color: var(--accent-color);
+}
+
+.editor-fullscreen {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .main-content {

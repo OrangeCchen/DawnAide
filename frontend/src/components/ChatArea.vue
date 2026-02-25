@@ -5,6 +5,9 @@ import MessageCard from './MessageCard.vue'
 import ScenePanel from './ScenePanel.vue'
 import TaskMonitorPanel from './TaskMonitorPanel.vue'
 
+const scenePanelRef = ref<InstanceType<typeof ScenePanel> | null>(null)
+const scenePanelInitCategory = ref('')
+
 const props = defineProps<{
   externalPrefill?: { id: number; text: string } | null
 }>()
@@ -68,10 +71,12 @@ const sceneFormValues = ref<Record<string, string>>({})
 
 function selectQuickScene(scene: QuickScene) {
   if (scene.fields.length === 0) {
-    // 无额外字段的场景：直接把场景名称插入输入框作为前缀
     showScenePicker.value = false
     activeSceneId.value = ''
-    inputText.value = `【${scene.label}】` + inputText.value
+    // 设置初始分类，清空当前会话让 ScenePanel 重新挂载，
+    // ScenePanel 数据加载完毕后会自动跳转到对应分类
+    scenePanelInitCategory.value = scene.sceneCategory
+    store.currentTeamId = ''
   } else {
     // 有字段的场景：展开表单
     activeSceneId.value = activeSceneId.value === scene.id ? '' : scene.id
@@ -269,6 +274,7 @@ async function handleSubmit() {
         team_id: store.currentTeamId,
         file_paths: paths,
         enable_review: enableReview.value,
+        expert_mode: store.expertMode,
       }),
     })
 
@@ -361,6 +367,7 @@ async function handleSceneSubmit(payload: {
         description: payload.description,
         team_id: teamId,
         enable_review: enableReview.value,
+        expert_mode: store.expertMode,
         scene_type: payload.sceneType,
         scene_category: payload.sceneCategory,
         scene_form_data: payload.sceneFormData,
@@ -420,6 +427,13 @@ const currentMonitor = computed<Record<string, any> | null>(() => {
 })
 
 const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
+const monitorCollapsed = ref(false)
+
+// 切换到新对话时，重置折叠状态
+watch(
+  () => store.currentTeamId,
+  () => { monitorCollapsed.value = false }
+)
 </script>
 
 <template>
@@ -435,13 +449,23 @@ const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
     <TaskMonitorPanel
       v-if="showMonitorPanel && currentMonitor"
       :monitor="currentMonitor"
+      :collapsed="monitorCollapsed"
       class="task-monitor-overlay"
+      @update:collapsed="monitorCollapsed = $event"
       @confirm-execute="handleConfirmExecute"
       @re-analyze="handleReAnalyze"
     />
 
     <!-- 消息区域 -->
-    <div ref="chatContainer" class="chat-messages" :class="{ 'with-monitor': showMonitorPanel }" @scroll="onChatScroll">
+    <div
+      ref="chatContainer"
+      class="chat-messages"
+      :class="{
+        'with-monitor-expanded': showMonitorPanel && !monitorCollapsed,
+        'with-monitor-collapsed': showMonitorPanel && monitorCollapsed,
+      }"
+      @scroll="onChatScroll"
+    >
       <div class="messages-inner">
         <MessageCard
           v-for="msg in messages"
@@ -453,7 +477,12 @@ const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
       <!-- 空状态：场景面板 + 示例 -->
       <div v-if="messages.length === 0" class="empty-welcome">
         <div class="welcome-content">
-          <ScenePanel @submit="handleSceneSubmit" @context-change="handleSceneContextChange" />
+          <ScenePanel
+            ref="scenePanelRef"
+            :initial-category="scenePanelInitCategory"
+            @submit="handleSceneSubmit"
+            @context-change="(p) => { scenePanelInitCategory = ''; handleSceneContextChange(p) }"
+          />
 
           <div class="example-section">
             <p class="example-label">或试试这些示例</p>
@@ -479,7 +508,7 @@ const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
           <span class="dot" style="animation-delay: 150ms"></span>
           <span class="dot" style="animation-delay: 300ms"></span>
         </div>
-        <span class="working-text">专家团队协作中...</span>
+        <span class="working-text">{{ store.expertMode ? '专家团队协作中...' : '正在回答...' }}</span>
       </div>
     </div>
 
@@ -698,10 +727,20 @@ const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
   min-height: 0;
 }
 
-.chat-messages.with-monitor .messages-inner,
-.chat-messages.with-monitor .empty-welcome {
-  padding-right: 312px;
+/* 面板展开时：内容区右侧留出面板宽度（tab 22px + 面板 260px + 间隙 10px） */
+.chat-messages.with-monitor-expanded .messages-inner,
+.chat-messages.with-monitor-expanded .empty-welcome {
+  padding-right: 300px;
   box-sizing: border-box;
+  transition: padding-right 0.2s ease;
+}
+
+/* 面板折叠时：内容区右侧仅留出 tab 宽度（22px + 少量间隙） */
+.chat-messages.with-monitor-collapsed .messages-inner,
+.chat-messages.with-monitor-collapsed .empty-welcome {
+  padding-right: 30px;
+  box-sizing: border-box;
+  transition: padding-right 0.2s ease;
 }
 
 .task-monitor-overlay {

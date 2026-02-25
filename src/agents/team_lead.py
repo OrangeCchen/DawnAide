@@ -29,7 +29,12 @@ NATURAL_LANGUAGE_PROMPT = (
     "你是一个专业的 AI 助手。请直接用自然语言回答问题，输出清晰、有条理的内容。"
     "不要输出 JSON 格式，不要使用代码块包裹回答，直接输出文本内容。"
     "⚠️ 重要：当用户提供了专家分析内容或搜索结果数据时，你必须忠实引用其中的事实信息（日期、数据、事件等），"
-    "严禁用自身知识替换或篡改这些来自实时搜索的信息。搜索结果比你的训练数据更准确。"
+    "严禁用自身知识替换或篡改这些来自实时搜索的信息。搜索结果比你的训练数据更准确。\n"
+    "⛔ 写作/公文场景的铁律：文稿中若存在需要具体事实才能填写的内容"
+    "（如：具体日期、人名、单位名称、地点、数字、金额、具体事项等），"
+    "而用户未提供这些信息，则必须在对应位置写入占位符 `【需补充：说明原因】`，"
+    "例如：`【需补充：活动具体日期】`、`【需补充：参会人员名单】`。"
+    "严禁凭空编造任何事实性内容，哪怕编造的内容看起来合理也不行。"
 )
 
 TEAM_LEAD_SYSTEM_PROMPT = """你是一个任务协调者。收到用户任务后，你需要按以下优先级**依次**判断：
@@ -317,6 +322,11 @@ class TeamLeadAgent(AgentBase):
         if self._is_file_organize_task(task):
             return await self._execute_file_organize_task(task, task_start)
 
+        # 非专家模式：跳过多Agent协作，直接由LLM回答
+        expert_mode = task.metadata.get("expert_mode", True)
+        if not expert_mode:
+            return await self._execute_direct_answer(task, task_start)
+
         # ========== 通用监控 TODO ==========
         gen_todo: list[dict] = [
             {"id": "analyze", "title": "分析任务", "status": "running"},
@@ -442,9 +452,11 @@ class TeamLeadAgent(AgentBase):
                         ),
                     },
                 )
+                _constraints = self._build_scene_constraints(task)
                 draft = await self.think(
-                    f"请回答用户的问题。用户说的是: {task.description}\n\n"
-                    f"你之前的分析: {direct_answer}\n\n"
+                    f"请回答用户的问题。用户说的是: {task.description}"
+                    + _constraints
+                    + f"\n\n你之前的分析: {direct_answer}\n\n"
                     f"**在回答之前，请先完成以下推理步骤，并把推理过程写出来（这很重要）：**\n\n"
                     f"**步骤1 - 目标识别：** 用户的最终目标是什么？（例如「去洗车」→ 目标是让车被洗干净）\n"
                     f"**步骤2 - 前提分析：** 达成目标需要哪些不可或缺的物理前提？（例如洗车→车本身必须到达洗车店）\n"
@@ -481,9 +493,11 @@ class TeamLeadAgent(AgentBase):
                         ),
                     },
                 )
+                _constraints2 = self._build_scene_constraints(task)
                 draft = await self.think(
-                    f"请回答用户的问题:\n{task.description}\n\n"
-                    f"**在回答之前，请先完成以下推理步骤，并把推理过程写出来（这很重要）：**\n\n"
+                    f"请回答用户的问题:\n{task.description}"
+                    + _constraints2
+                    + f"\n\n**在回答之前，请先完成以下推理步骤，并把推理过程写出来（这很重要）：**\n\n"
                     f"**步骤1 - 目标识别：** 用户的最终目标是什么？（例如「去洗车」→ 目标是让车被洗干净）\n"
                     f"**步骤2 - 前提分析：** 达成目标需要哪些不可或缺的物理前提？（例如洗车→车本身必须到达洗车店）\n"
                     f"**步骤3 - 可行性验证：** 如果按照我想给出的建议去做，在物理世界中能否真正达成目标？"
@@ -847,6 +861,112 @@ class TeamLeadAgent(AgentBase):
         return TaskResult(
             task_id=task.id, agent_name=self.name,
             status=TaskStatus.COMPLETED, content=summary,
+        )
+
+    @staticmethod
+    def _build_scene_constraints(task: Task) -> str:
+        """将 scene_form_data 转为写作约束文本块，供注入各阶段 prompt。
+
+        同时列出「已填字段（必须采用）」和「未填字段（必须占位，禁止编造）」，
+        确保 LLM 不会对任何未知事实自行脑补。
+        """
+        form_data: dict = task.metadata.get("scene_form_data") or {}
+        scene_category = task.metadata.get("scene_category", "")
+        scene_type = task.metadata.get("scene_type", "")
+        if not form_data:
+            return ""
+
+        # 字段标签映射
+        label_map: dict[str, str] = {
+            "folder_scope": "待整理目录",
+            "organize_goal": "整理目标",
+            "document_type": "文档类型",
+            "topic": "主题/事由",
+            "audience": "受众/收件方",
+            "tone": "语气风格",
+            "length": "篇幅要求",
+            "key_points": "核心要点",
+            "deadline": "时间/截止日期",
+            "sender": "发件人/署名",
+            "occasion": "场合",
+            "background": "背景信息",
+            "goal": "目标",
+        }
+
+        filled_lines: list[str] = []
+        missing_lines: list[str] = []
+
+        for fid, val in form_data.items():
+            label = label_map.get(fid, fid)
+            if val and str(val).strip():
+                filled_lines.append(f"- {label}：{val}")
+            else:
+                missing_lines.append(f"- {label}（用户未填写）")
+
+        # 没有任何已填字段时，直接返回空（避免干扰非写作场景）
+        if not filled_lines and not missing_lines:
+            return ""
+
+        scene_hint = ""
+        if scene_category:
+            scene_hint = f"（场景：{scene_category}"
+            if scene_type:
+                scene_hint += f" / {scene_type}"
+            scene_hint += "）"
+
+        result = f"\n\n【⚠️ 用户已确认的结构化规格约束{scene_hint}】\n"
+
+        if filled_lines:
+            result += "\n✅ 以下字段用户已填写，必须严格采用，不可改写：\n"
+            result += "\n".join(filled_lines) + "\n"
+
+        if missing_lines:
+            result += (
+                "\n❌ 以下字段用户未填写，对应位置必须写入占位符，禁止编造任何具体内容：\n"
+                + "\n".join(missing_lines) + "\n"
+                + "\n占位符格式示例：`【需补充：活动具体日期】`、`【需补充：参会人员名单】`\n"
+                "请为每个空白字段在文稿中自动添加对应的 `【需补充：...】` 标记。\n"
+            )
+
+        return result
+
+    async def _execute_direct_answer(self, task: Task, task_start: float) -> TaskResult:
+        """非专家模式：直接由LLM回答，不走多Agent协作流程"""
+        logger.info(f"[{self.name}] 非专家模式，直接回答: {task.title}")
+
+        await self.send_message(
+            content="正在回答...",
+            team_id=task.team_id,
+            msg_type=MessageType.STATUS_UPDATE,
+            metadata={"status": "working"},
+        )
+
+        await self.think_stream(
+            user_input=task.description,
+            team_id=task.team_id,
+            msg_type=MessageType.TASK_RESULT,
+            system_prompt=NATURAL_LANGUAGE_PROMPT,
+        )
+
+        # 尝试自动重命名对话（首次对话）
+        try:
+            await self._auto_rename_team(task)
+        except Exception as e:
+            logger.warning(f"直接回答后自动重命名失败: {e}")
+
+        elapsed = round(time.time() - task_start, 1)
+        await self.send_message(
+            content="回答完成",
+            team_id=task.team_id,
+            msg_type=MessageType.STATUS_UPDATE,
+            metadata={"status": "completed", "elapsed": elapsed},
+        )
+
+        return TaskResult(
+            task_id=task.id,
+            agent_name=self.name,
+            status=TaskStatus.COMPLETED,
+            content="",
         )
 
     def _is_file_organize_task(self, task: Task) -> bool:
@@ -2177,6 +2297,7 @@ class TeamLeadAgent(AgentBase):
                 "角标编号必须与专家使用的编号一致，不要重新编号。\n"
             )
 
+        scene_constraints = self._build_scene_constraints(task)
         prompt = (
             "以下是专家团队的多轮协作结果及领域核查意见，请汇总为一份高质量的最终报告。\n"
             "**重要：优先采用领域核查后的修正版本**，核查专家已验证事实准确性和逻辑一致性。\n"
@@ -2184,7 +2305,8 @@ class TeamLeadAgent(AgentBase):
             "⚠️ **严格约束**：你必须忠实于专家提供的分析内容和数据，不得篡改、忽略或凭自身知识替换专家引用的搜索结果和事实信息。"
             "如果专家引用了联网搜索结果中的具体日期、数据、事件等，你必须原样保留。\n"
             f"{citation_instruction}"
-            "直接输出报告内容，不要说'以下是汇总'之类的套话。\n\n"
+            + scene_constraints
+            + "直接输出报告内容，不要说'以下是汇总'之类的套话。\n\n"
             f"原始任务: {task.title}\n\n"
             f"## 第一轮：独立分析\n{r1_parts}\n\n"
             f"## 第二轮：协作讨论\n{r2_parts}"

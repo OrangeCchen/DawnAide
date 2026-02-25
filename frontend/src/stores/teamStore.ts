@@ -2,6 +2,14 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Team, Message, AgentInfo } from '../types'
 
+export interface EditorState {
+  active: boolean
+  content: string       // 进入编辑器时的初始文档内容
+  originalTask: string  // 原始任务描述，供润色时提供背景
+  teamId: string        // 润色消息推送到哪个 team
+  messageId: string     // 来源消息 ID（用于溯源）
+}
+
 export const useTeamStore = defineStore('team', () => {
   // State
   const teams = ref<Team[]>([])
@@ -10,6 +18,33 @@ export const useTeamStore = defineStore('team', () => {
   const agents = ref<AgentInfo[]>([])
   const loading = ref(false)
   const streamTick = ref(0) // 每次流式内容更新时递增，触发滚动
+
+  // 专家模式：开启时走多Agent协作流程；关闭时直接由LLM回答
+  const expertMode = ref<boolean>(
+    localStorage.getItem('expertMode') !== 'false'
+  )
+
+  function toggleExpertMode() {
+    expertMode.value = !expertMode.value
+    localStorage.setItem('expertMode', String(expertMode.value))
+  }
+
+  // 写作编辑器模式
+  const editorState = ref<EditorState>({
+    active: false,
+    content: '',
+    originalTask: '',
+    teamId: '',
+    messageId: '',
+  })
+
+  function openEditor(payload: Omit<EditorState, 'active'>) {
+    editorState.value = { active: true, ...payload }
+  }
+
+  function closeEditor() {
+    editorState.value = { active: false, content: '', originalTask: '', teamId: '', messageId: '' }
+  }
 
   // Getters
   const currentTeam = computed(() =>
@@ -176,6 +211,8 @@ export const useTeamStore = defineStore('team', () => {
     streamTick,
     currentTeam,
     currentMessages,
+    editorState,
+    expertMode,
     fetchTeams,
     createTeam,
     deleteTeam,
@@ -184,5 +221,8 @@ export const useTeamStore = defineStore('team', () => {
     fetchMessages,
     addMessage,
     selectTeam,
+    openEditor,
+    closeEditor,
+    toggleExpertMode,
   }
 })

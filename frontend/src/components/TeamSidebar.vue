@@ -127,6 +127,20 @@ function formatTime(timestamp: string): string {
       </div>
     </div>
 
+    <!-- 专家模式开关 -->
+    <div class="expert-section">
+      <button
+        @click="store.toggleExpertMode()"
+        class="expert-toggle"
+        :class="{ 'expert-active': store.expertMode }"
+        :title="store.expertMode ? '专家模式已开启：多Agent协作分析' : '点击开启专家模式'"
+      >
+        <span class="expert-icon">{{ store.expertMode ? '🧠' : '💬' }}</span>
+        <span class="expert-label">专家模式</span>
+        <span class="expert-status-badge">{{ store.expertMode ? '开启' : '关闭' }}</span>
+      </button>
+    </div>
+
     <!-- iMessage Bot 开关 -->
     <div class="bot-section">
       <button
@@ -282,6 +296,62 @@ function formatTime(timestamp: string): string {
 .empty-hint {
   font-size: 12px;
   color: var(--text-light);
+}
+
+/* 专家模式开关 */
+.expert-section {
+  padding: 12px 12px 0;
+  flex-shrink: 0;
+}
+
+.expert-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.expert-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.expert-toggle.expert-active {
+  border-color: rgba(0, 122, 255, 0.4);
+  background: rgba(0, 122, 255, 0.05);
+}
+
+.expert-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.expert-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  flex: 1;
+  text-align: left;
+}
+
+.expert-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-light);
+  flex-shrink: 0;
+}
+
+.expert-active .expert-status-badge {
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--accent);
 }
 
 /* iMessage Bot */
