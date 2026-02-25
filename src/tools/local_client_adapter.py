@@ -169,6 +169,10 @@ class LocalClientAdapter:
 
         return await self._request("POST", "/file/read", json=payload)
 
+    async def open_path(self, path: str) -> dict[str, Any] | None:
+        """通过 Runtime 打开本地目录/文件"""
+        return await self._request("POST", "/file/open", json={"path": path})
+
     async def search_kb(
         self,
         query: str,

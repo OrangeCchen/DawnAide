@@ -3,6 +3,7 @@ import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useTeamStore } from '../stores/teamStore'
 import MessageCard from './MessageCard.vue'
 import ScenePanel from './ScenePanel.vue'
+import TaskMonitorPanel from './TaskMonitorPanel.vue'
 
 const props = defineProps<{
   externalPrefill?: { id: number; text: string } | null
@@ -18,6 +19,94 @@ const submitting = ref(false)
 const lastAppliedPrefillId = ref<number | null>(null)
 
 const messages = computed(() => store.currentMessages)
+
+// ====== 场景快捷选择 ======
+const showScenePicker = ref(false)
+interface QuickScene {
+  id: string
+  icon: string
+  label: string
+  description: string
+  sceneType: string
+  sceneCategory: string
+  fields: Array<{ id: string; label: string; placeholder: string; required: boolean }>
+}
+const quickScenes: QuickScene[] = [
+  {
+    id: 'file_organize',
+    icon: '🗂️',
+    label: '文件整理',
+    description: '智能整理本地文件',
+    sceneType: 'file_organize_plan',
+    sceneCategory: 'file_organize',
+    fields: [
+      { id: 'folder_scope', label: '待整理目录', placeholder: '例如 ~/Downloads', required: true },
+      { id: 'organize_goal', label: '整理目标', placeholder: '可选，不填则由专家建议', required: false },
+    ],
+  },
+  {
+    id: 'daily_writing',
+    icon: '✏️',
+    label: '日常写作',
+    description: '邮件、周报、通知等',
+    sceneType: 'daily_writing',
+    sceneCategory: 'daily_writing',
+    fields: [],
+  },
+  {
+    id: 'official_writing',
+    icon: '📝',
+    label: '公文写作',
+    description: '正式公文、报告、通告',
+    sceneType: 'official_writing',
+    sceneCategory: 'official_writing',
+    fields: [],
+  },
+]
+const activeSceneId = ref('')
+const sceneFormValues = ref<Record<string, string>>({})
+
+function selectQuickScene(scene: QuickScene) {
+  if (scene.fields.length === 0) {
+    // 无额外字段的场景：直接把场景名称插入输入框作为前缀
+    showScenePicker.value = false
+    activeSceneId.value = ''
+    inputText.value = `【${scene.label}】` + inputText.value
+  } else {
+    // 有字段的场景：展开表单
+    activeSceneId.value = activeSceneId.value === scene.id ? '' : scene.id
+    sceneFormValues.value = {}
+  }
+}
+
+function onSceneFieldInput(fieldId: string, event: Event) {
+  const target = event.target as HTMLInputElement | null
+  sceneFormValues.value = { ...sceneFormValues.value, [fieldId]: target?.value ?? '' }
+}
+
+function submitQuickScene(scene: QuickScene) {
+  const vals = sceneFormValues.value
+  const parts: string[] = []
+  const formData: Record<string, string> = {}
+  for (const field of scene.fields) {
+    const v = (vals[field.id] || '').trim()
+    if (field.required && !v) return
+    if (v) {
+      parts.push(`${field.label}：${v}`)
+      formData[field.id] = v
+    }
+  }
+  const desc = `【${scene.label}】\n\n${parts.join('\n')}`
+  showScenePicker.value = false
+  activeSceneId.value = ''
+  handleSceneSubmit({
+    title: scene.label,
+    description: desc,
+    sceneType: scene.sceneType,
+    sceneCategory: scene.sceneCategory,
+    sceneFormData: formData,
+  })
+}
 
 watch(
   () => props.externalPrefill,
@@ -84,6 +173,25 @@ const exampleTasks = [
   { text: '审查这个项目的代码质量和架构问题', hasFile: true, path: '~/Projects/my-app/src' },
   { text: '撰写一份关于多Agent协作平台的产品发布通稿', hasFile: false },
 ]
+
+const sceneExamplesMap: Record<string, Array<{ text: string; hasFile: boolean; path?: string }>> = {
+  default: exampleTasks,
+  file_organize: [
+    { text: '请先分析这个目录结构并给出整理预览方案：~/Downloads', hasFile: true, path: '~/Downloads' },
+    { text: '我不确定怎么整理，先给我一个稳妥的分类建议和预览。', hasFile: false },
+    { text: '请先按文件类型整理预览，再让我确认是否执行。', hasFile: false },
+  ],
+  official_writing: [
+    { text: '帮我写一份项目启动会通知，语气正式，包含时间地点和议程。', hasFile: false },
+    { text: '写一份周报模板，适合研发团队。', hasFile: false },
+    { text: '起草一份跨部门协作公告，突出责任分工。', hasFile: false },
+  ],
+}
+const sceneContext = ref<{ sceneCategory: string; sceneType: string }>({ sceneCategory: '', sceneType: '' })
+const sceneAwareExamples = computed(() => {
+  const key = sceneContext.value.sceneCategory || 'default'
+  return sceneExamplesMap[key] || sceneExamplesMap.default
+})
 
 // ====== 智能滚动：用户滚动查看时不强制回底部 ======
 const userNearBottom = ref(true)
@@ -182,6 +290,52 @@ function useExample(example: typeof exampleTasks[0]) {
   }
 }
 
+function handleSceneContextChange(payload: { sceneCategory: string; sceneType: string }) {
+  sceneContext.value = payload
+}
+
+async function handleConfirmExecute(workspace: string, organizeGoal: string) {
+  if (!workspace) return
+  const teamId = store.currentTeam?.id
+  if (!teamId) return
+
+  submitting.value = true
+  try {
+    const response = await fetch('/api/tasks/file-organize-confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: teamId,
+        workspace: workspace,
+        organize_goal: organizeGoal,
+      }),
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => null)
+      console.error('确认执行失败:', data?.detail || response.statusText)
+    }
+  } catch (e) {
+    console.error('确认执行失败:', e)
+  } finally {
+    submitting.value = false
+  }
+}
+
+// 用户在监控面板选择了新的整理目标，作为新一轮对话发起重新分析
+async function handleReAnalyze(workspace: string, newGoal: string) {
+  if (!workspace || !newGoal) return
+  await handleSceneSubmit({
+    title: `按「${newGoal}」重新整理`,
+    description: `【文件整理 · 重新分析】\n\n待整理目录：${workspace}\n整理目标：${newGoal}`,
+    sceneType: 'file_organize_plan',
+    sceneCategory: 'file_organize',
+    sceneFormData: {
+      folder_scope: workspace,
+      organize_goal: newGoal,
+    },
+  })
+}
+
 async function handleSceneSubmit(payload: {
   description: string
   title: string
@@ -246,11 +400,26 @@ const isWorking = computed(() => {
   // 还有流式中的消息 → 工作中
   const hasStreaming = messages.value.some(m => m.metadata?.streaming === true)
   if (hasStreaming) return true
-  // 最后一条是非完成状态的 status_update → 工作中
+  // 最后一条是进行中的 status_update 才算工作中（pending_confirm 不算）
   const last = messages.value[messages.value.length - 1]
-  if (last.type === 'status_update' && last.metadata?.status !== 'completed') return true
+  if (last.type === 'status_update') {
+    const status = last.metadata?.status
+    if (status && status !== 'completed' && status !== 'pending_confirm') return true
+  }
   return false
 })
+
+const currentMonitor = computed<Record<string, any> | null>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    if (msg.type !== 'status_update') continue
+    const monitor = msg.metadata?.monitor
+    if (monitor && monitor.task_type) return monitor
+  }
+  return null
+})
+
+const showMonitorPanel = computed(() => Boolean(currentMonitor.value))
 </script>
 
 <template>
@@ -263,8 +432,16 @@ const isWorking = computed(() => {
       </div>
     </div>
 
+    <TaskMonitorPanel
+      v-if="showMonitorPanel && currentMonitor"
+      :monitor="currentMonitor"
+      class="task-monitor-overlay"
+      @confirm-execute="handleConfirmExecute"
+      @re-analyze="handleReAnalyze"
+    />
+
     <!-- 消息区域 -->
-    <div ref="chatContainer" class="chat-messages" @scroll="onChatScroll">
+    <div ref="chatContainer" class="chat-messages" :class="{ 'with-monitor': showMonitorPanel }" @scroll="onChatScroll">
       <div class="messages-inner">
         <MessageCard
           v-for="msg in messages"
@@ -276,13 +453,13 @@ const isWorking = computed(() => {
       <!-- 空状态：场景面板 + 示例 -->
       <div v-if="messages.length === 0" class="empty-welcome">
         <div class="welcome-content">
-          <ScenePanel @submit="handleSceneSubmit" />
+          <ScenePanel @submit="handleSceneSubmit" @context-change="handleSceneContextChange" />
 
           <div class="example-section">
             <p class="example-label">或试试这些示例</p>
             <div class="example-list">
               <button
-                v-for="(example, idx) in exampleTasks"
+                v-for="(example, idx) in sceneAwareExamples"
                 :key="idx"
                 @click="useExample(example)"
                 class="example-btn"
@@ -387,6 +564,61 @@ const isWorking = computed(() => {
           </svg>
           <span class="review-label">审查</span>
         </button>
+
+        <!-- 场景快捷选择 -->
+        <div class="scene-picker-wrapper">
+          <button
+            class="btn-scene"
+            :class="{ active: showScenePicker }"
+            title="快捷选择场景"
+            @click="showScenePicker = !showScenePicker"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            <span class="scene-label">场景</span>
+          </button>
+
+          <Transition name="dropdown">
+            <div v-if="showScenePicker" class="scene-dropdown">
+              <div
+                v-for="scene in quickScenes"
+                :key="scene.id"
+                class="scene-option"
+                :class="{ expanded: activeSceneId === scene.id }"
+              >
+                <button class="scene-option-head" @click="selectQuickScene(scene)">
+                  <span class="scene-option-icon">{{ scene.icon }}</span>
+                  <span class="scene-option-info">
+                    <span class="scene-option-label">{{ scene.label }}</span>
+                    <span class="scene-option-desc">{{ scene.description }}</span>
+                  </span>
+                </button>
+                <!-- 展开的字段表单 -->
+                <div v-if="activeSceneId === scene.id && scene.fields.length" class="scene-option-form">
+                  <div v-for="field in scene.fields" :key="field.id" class="scene-field">
+                    <label class="scene-field-label">
+                      {{ field.label }}
+                      <span v-if="field.required" class="required-star">*</span>
+                    </label>
+                    <input
+                      class="scene-field-input"
+                      :placeholder="field.placeholder"
+                      :value="sceneFormValues[field.id] || ''"
+                      @input="onSceneFieldInput(field.id, $event)"
+                    />
+                  </div>
+                  <button class="scene-field-submit" @click="submitQuickScene(scene)">开始</button>
+                </div>
+              </div>
+            </div>
+          </Transition>
+
+          <div v-if="showScenePicker" class="scene-backdrop" @click="showScenePicker = false; activeSceneId = ''"></div>
+        </div>
       </div>
 
       <!-- 主输入框 -->
@@ -437,6 +669,7 @@ const isWorking = computed(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-card);
+  position: relative;
 }
 
 .chat-header {
@@ -463,6 +696,20 @@ const isWorking = computed(() => {
   overflow-y: auto;
   position: relative;
   min-height: 0;
+}
+
+.chat-messages.with-monitor .messages-inner,
+.chat-messages.with-monitor .empty-welcome {
+  padding-right: 312px;
+  box-sizing: border-box;
+}
+
+.task-monitor-overlay {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
 }
 
 .messages-inner {
@@ -829,6 +1076,165 @@ const isWorking = computed(() => {
 
 .review-label {
   font-weight: 500;
+}
+
+/* 场景快捷选择 */
+.scene-picker-wrapper {
+  position: relative;
+}
+
+.btn-scene {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-light);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-scene:hover {
+  border-color: var(--text-muted);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.btn-scene.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 122, 255, 0.06);
+}
+
+.scene-label {
+  font-weight: 500;
+}
+
+.scene-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 6px;
+  width: 260px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 50;
+}
+
+.scene-option {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.scene-option + .scene-option {
+  margin-top: 2px;
+}
+
+.scene-option-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background 0.12s;
+}
+
+.scene-option-head:hover {
+  background: var(--bg-hover);
+}
+
+.scene-option-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.scene-option-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+}
+
+.scene-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.scene-option-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.scene-option-form {
+  padding: 6px 10px 10px;
+}
+
+.scene-field {
+  margin-bottom: 8px;
+}
+
+.scene-field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+
+.required-star {
+  color: #ef4444;
+}
+
+.scene-field-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  outline: none;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.scene-field-input:focus {
+  border-color: var(--accent);
+}
+
+.scene-field-submit {
+  width: 100%;
+  padding: 7px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.scene-field-submit:hover {
+  opacity: 0.85;
+}
+
+.scene-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
 }
 
 .main-textarea {

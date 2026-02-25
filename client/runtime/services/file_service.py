@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import sys
 from pathlib import Path
+import subprocess
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
@@ -32,6 +34,10 @@ class FileReadResponse(BaseModel):
     meta: dict = {}
     entries: list[dict] = []
     error: str = ""
+
+
+class OpenPathRequest(BaseModel):
+    path: str
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -73,6 +79,27 @@ async def read_file(req: FileReadRequest):
             "name": p.name,
         },
     )
+
+
+@router.post("/open")
+async def open_path(req: OpenPathRequest):
+    p = Path(req.path).expanduser().resolve()
+    if not is_path_permitted(str(p)):
+        raise HTTPException(status_code=403, detail=f"路径未授权: {req.path}")
+    if not p.exists():
+        return {"ok": False, "error": f"路径不存在: {req.path}"}
+
+    try:
+        if os.name == "nt":
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+        return {"ok": True, "path": str(p)}
+    except Exception as e:
+        logger.warning(f"[文件服务] 打开路径失败: {p} -> {e}")
+        return {"ok": False, "error": str(e)}
 
 
 def _list_directory(p: Path) -> FileReadResponse:

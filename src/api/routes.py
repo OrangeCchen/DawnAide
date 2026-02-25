@@ -16,6 +16,7 @@ from src.core.team import TeamMember, get_team_manager
 from src.memory.memory_system import get_memory_system
 from src.llm.base import ChatMessage
 from src.stores.role_registry import get_role_registry
+from src.tools.local_client_adapter import get_local_client_adapter
 
 router = APIRouter(prefix="/api")
 
@@ -51,6 +52,10 @@ class NoteSuggestRequest(BaseModel):
     need_divergent: bool = False
     use_web_search: bool = True
     team_id: str = ""
+
+
+class OpenLocalPathRequest(BaseModel):
+    path: str
 
 
 class CreateRoleRequest(BaseModel):
@@ -436,6 +441,22 @@ async def suggest_note(req: NoteSuggestRequest):
     }
 
 
+@router.post("/local/open-path")
+async def open_local_path(req: OpenLocalPathRequest):
+    """通过桌面 Runtime 打开本地路径"""
+    adapter = get_local_client_adapter()
+    status = await adapter.check_health()
+    if not status.online:
+        raise HTTPException(status_code=503, detail="本地 Runtime 未运行")
+
+    result = await adapter.open_path(req.path)
+    if not result:
+        raise HTTPException(status_code=500, detail="调用 Runtime 打开路径失败")
+    if result.get("ok"):
+        return result
+    raise HTTPException(status_code=400, detail=result.get("error", "打开路径失败"))
+
+
 # ---- Messages Routes ----
 
 
@@ -705,3 +726,51 @@ async def export_word(req: ExportWordRequest):
     except Exception as e:
         logger.error(f"Word 导出失败: {e}")
         raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+
+
+class FileOrganizeConfirmRequest(BaseModel):
+    team_id: str
+    workspace: str
+    organize_goal: str = ""
+
+
+@router.post("/tasks/file-organize-confirm")
+async def confirm_file_organize(req: FileOrganizeConfirmRequest):
+    """确认执行文件整理任务"""
+    try:
+        engine = get_engine()
+        if not engine:
+            raise HTTPException(status_code=503, detail="引擎未就绪")
+        agent = engine.get_agent("team-lead")
+        if not agent:
+            raise HTTPException(status_code=503, detail="team-lead 不可用")
+
+        task_description = f"确认执行文件整理：{req.workspace}"
+        task_metadata = {
+            "scene_form_data": {
+                "folder_scope": req.workspace,
+                "organize_goal": req.organize_goal,
+            },
+            "confirm_execute": True,
+        }
+
+        from src.core.task import Task
+        task = Task(
+            team_id=req.team_id,
+            title="文件整理",
+            description=task_description,
+            metadata=task_metadata,
+        )
+
+        import time
+        task_start = time.time()
+        result = await agent._execute_file_organize_task(task, task_start)
+
+        return {
+            "status": "ok",
+            "task_id": result.task_id,
+            "content": result.content,
+        }
+    except Exception as e:
+        logger.error(f"确认执行文件整理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"执行失败: {e}")

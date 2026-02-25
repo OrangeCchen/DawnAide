@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
+from httpx import Timeout
 from loguru import logger
 from openai import AsyncOpenAI
 
 from src.llm.base import ChatMessage, LLMAdapter, LLMResponse
+
+# 连接超时 10s，读取超时 120s（流式响应可能较慢），写入超时 30s
+_DEFAULT_TIMEOUT = Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
 
 class OpenAIAdapter(LLMAdapter):
@@ -15,7 +19,11 @@ class OpenAIAdapter(LLMAdapter):
 
     def __init__(self, api_key: str, base_url: str, model: str):
         self.model = model
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=_DEFAULT_TIMEOUT,
+        )
         logger.info(f"OpenAI 适配器已创建: model={model}, base_url={base_url}")
 
     def _is_thinking_model(self) -> bool:

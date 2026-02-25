@@ -50,13 +50,7 @@ function handleFillChatInput(text: string) {
 
 <template>
   <div class="app-window">
-    <!-- macOS 标题栏模拟 -->
     <div class="title-bar">
-      <div class="traffic-lights">
-        <span class="dot dot-close"></span>
-        <span class="dot dot-minimize"></span>
-        <span class="dot dot-maximize"></span>
-      </div>
 
       <div class="title-tabs no-drag">
         <button

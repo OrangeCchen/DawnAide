@@ -34,6 +34,10 @@ const emit = defineEmits<{
     sceneCategory: string
     sceneFormData: Record<string, string>
   }): void
+  (e: 'context-change', payload: {
+    sceneCategory: string
+    sceneType: string
+  }): void
 }>()
 
 const scenes = ref<SceneCategory[]>([])
@@ -60,6 +64,7 @@ function selectCategory(cat: SceneCategory) {
   selectedCategory.value = cat
   selectedTemplate.value = null
   formData.value = {}
+  emit('context-change', { sceneCategory: cat.name, sceneType: '' })
 }
 
 function selectTemplate(tmpl: SceneTemplate) {
@@ -69,14 +74,23 @@ function selectTemplate(tmpl: SceneTemplate) {
     data[f.id] = ''
   }
   formData.value = data
+  emit('context-change', {
+    sceneCategory: selectedCategory.value?.name || '',
+    sceneType: tmpl.id,
+  })
 }
 
 function goBack() {
   if (selectedTemplate.value) {
     selectedTemplate.value = null
     formData.value = {}
+    emit('context-change', {
+      sceneCategory: selectedCategory.value?.name || '',
+      sceneType: '',
+    })
   } else if (selectedCategory.value) {
     selectedCategory.value = null
+    emit('context-change', { sceneCategory: '', sceneType: '' })
   }
 }
 
@@ -137,8 +151,7 @@ const fileOrganizeScene: SceneCategory = {
       description: '根据你的目录结构和目标，生成可执行整理方案',
       fields: [
         { id: 'folder_scope', label: '待整理目录', type: 'text', placeholder: '例如：~/Documents/项目资料', required: true },
-        { id: 'organize_goal', label: '整理目标', type: 'text', placeholder: '例如：按项目和日期分类', required: true },
-        { id: 'output_format', label: '输出形式', type: 'select', required: false, options: ['仅建议方案', '含命名规则', '含执行步骤'] },
+        { id: 'organize_goal', label: '整理目标', type: 'text', placeholder: '可选；不填则先由系统分析并给出建议', required: false },
       ],
     },
   ],

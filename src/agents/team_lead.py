@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from loguru import logger
@@ -21,6 +22,7 @@ from src.agents.base import AgentBase
 from src.core.message_bus import Message, MessageBus, MessageType
 from src.core.task import Task, TaskResult, TaskStatus
 from src.llm.base import ChatMessage, LLMAdapter
+from src.tools.file_organizer import organize_directory_safe, preview_organize_plan
 
 # 自然语言输出的 system prompt（用于草稿生成、最终汇总等非 JSON 阶段）
 NATURAL_LANGUAGE_PROMPT = (
@@ -47,7 +49,12 @@ TEAM_LEAD_SYSTEM_PROMPT = """你是一个任务协调者。收到用户任务后
 
 判断规则：
 - 简单问候（如 hi、你好、hello）、纯闲聊 → 不需要专家，experts 留空数组 []，在 direct_answer 中直接回答
-- 纯粹的常识/数学问题（如"9和9.99谁大"、"中国首都是哪"、"1+1等于几"）→ 不需要专家，直接回答
+- 纯粹的常识/数学问题（如"中国首都是哪"、"1+1等于几"）→ 不需要专家，直接回答
+- ⚠️ **逻辑推理题/脑筋急转弯/情景推理必须特别小心**：
+  · 如果问题包含特定情景（如距离、交通方式选择、物品运输等），很可能是逻辑陷阱题
+  · 这类题目看似是常识，实际考察的是"目标能否达成"而非"哪个方案效率更高"
+  · 典型例子："小明家距洗车店1公里，走路去洗车还是开车去？" → 必须开车去（因为车需要到洗车店，人走过去没用）
+  · 这类题目即使不创建专家，也必须在 direct_answer 中给出正确逻辑推理，不要掉入效率陷阱
 - ⚠️ **涉及时效性信息的问题（即使看起来简单）必须分配专家并联网搜索**，例如：
   · "2026年春晚时间" → 需要专家 + needs_search: true（具体日期需要查实时信息）
   · "最新iPhone价格" → 需要专家 + needs_search: true
@@ -306,12 +313,30 @@ class TeamLeadAgent(AgentBase):
         task_start = time.time()
         logger.info(f"[{self.name}] 开始分析任务: {task.title}")
 
+        # 文件整理场景走桌面端本地执行快路径（安全策略：禁止删除）
+        if self._is_file_organize_task(task):
+            return await self._execute_file_organize_task(task, task_start)
+
+        # ========== 通用监控 TODO ==========
+        gen_todo: list[dict] = [
+            {"id": "analyze", "title": "分析任务", "status": "running"},
+            {"id": "execute", "title": "执行分析", "status": "pending"},
+            {"id": "summarize", "title": "生成报告", "status": "pending"},
+        ]
+
         # ========== 阶段 0：任务分析 ==========
         await self.send_message(
             content="正在分析任务，确定所需专家...",
             team_id=task.team_id,
             msg_type=MessageType.STATUS_UPDATE,
-            metadata={"status": "working"},
+            metadata={
+                "status": "working",
+                "monitor": self._build_monitor(
+                    task_type="general",
+                    todo=gen_todo,
+                    note="正在理解任务并分配专家...",
+                ),
+            },
         )
 
         plan_text, plan_msg_id = await self._stream_plan(task)
@@ -322,6 +347,8 @@ class TeamLeadAgent(AgentBase):
         info_request = plan_data.get("info_request")
         is_scene_task = bool(task.metadata.get("scene_type"))
         has_expert_dependencies = any(e.get("depends_on") for e in experts)
+
+        gen_todo[0]["status"] = "done"
 
         # 场景任务已在前置卡片完成信息采集，避免重复弹补充信息卡
         if is_scene_task and info_request and isinstance(info_request, dict) and info_request.get("fields"):
@@ -400,22 +427,33 @@ class TeamLeadAgent(AgentBase):
                     },
                 ))
 
+                gen_todo[1]["status"] = "running"
+                gen_todo[1]["title"] = "生成回答草稿"
                 await self.send_message(
                     content="正在生成回答草稿...",
                     team_id=task.team_id,
                     msg_type=MessageType.STATUS_UPDATE,
-                    metadata={"status": "working"},
+                    metadata={
+                        "status": "working",
+                        "monitor": self._build_monitor(
+                            task_type="general", todo=gen_todo,
+                            note="直接回答，无需专家团队",
+                            skills=[{"id": s, "name": s} for s in direct_skills],
+                        ),
+                    },
                 )
-                # 非流式生成草稿（用户不可见）
                 draft = await self.think(
                     f"请回答用户的问题。用户说的是: {task.description}\n\n"
                     f"你之前的分析: {direct_answer}\n\n"
-                    f"**在回答之前，请先在心中完成以下推理（不要输出推理过程，只输出最终回答）：**\n"
-                    f"1. 用户的最终目标是什么？（例如「去洗车」的目标是让车被洗干净）\n"
-                    f"2. 达成这个目标需要哪些必要前提？（例如洗车→车必须在洗车店）\n"
-                    f"3. 我的回答建议如果用户照做，能否在物理上/逻辑上达成目标？\n"
-                    f"4. 问题中的数字信息（距离、价格等）是否可能是干扰项？不要被表面信息误导。\n\n"
-                    f"请基于以上思考给出正确的回答，不要提及专家或分析流程。",
+                    f"**在回答之前，请先完成以下推理步骤，并把推理过程写出来（这很重要）：**\n\n"
+                    f"**步骤1 - 目标识别：** 用户的最终目标是什么？（例如「去洗车」→ 目标是让车被洗干净）\n"
+                    f"**步骤2 - 前提分析：** 达成目标需要哪些不可或缺的物理前提？（例如洗车→车本身必须到达洗车店）\n"
+                    f"**步骤3 - 可行性验证：** 如果按照我想给出的建议去做，在物理世界中能否真正达成目标？"
+                    f"做一次完整的心理模拟，一步步想象执行后会发生什么。\n"
+                    f"**步骤4 - 干扰项识别：** 问题中的数字（距离、价格、时间等）是否是干扰项？"
+                    f"先确认「能不能做到」，再讨论「怎么做更好」。\n\n"
+                    f"**先输出上述推理过程，然后给出最终回答。**\n"
+                    f"不要提及专家或分析流程。",
                     system_prompt=NATURAL_LANGUAGE_PROMPT,
                 )
             else:
@@ -429,44 +467,69 @@ class TeamLeadAgent(AgentBase):
                     metadata={"target_id": plan_msg_id, "stream_done": True},
                 ))
 
+                gen_todo[1]["status"] = "running"
+                gen_todo[1]["title"] = "生成回答草稿"
                 await self.send_message(
                     content="正在生成回答草稿...",
                     team_id=task.team_id,
                     msg_type=MessageType.STATUS_UPDATE,
-                    metadata={"status": "working"},
+                    metadata={
+                        "status": "working",
+                        "monitor": self._build_monitor(
+                            task_type="general", todo=gen_todo,
+                            note="直接回答，无需专家团队",
+                        ),
+                    },
                 )
                 draft = await self.think(
                     f"请回答用户的问题:\n{task.description}\n\n"
-                    f"**在回答之前，请先在心中完成以下推理（不要输出推理过程，只输出最终回答）：**\n"
-                    f"1. 用户的最终目标是什么？（例如「去洗车」的目标是让车被洗干净）\n"
-                    f"2. 达成这个目标需要哪些必要前提？（例如洗车→车必须在洗车店）\n"
-                    f"3. 我的回答建议如果用户照做，能否在物理上/逻辑上达成目标？\n"
-                    f"4. 问题中的数字信息（距离、价格等）是否可能是干扰项？不要被表面信息误导。\n\n"
-                    f"只输出最终回答。",
+                    f"**在回答之前，请先完成以下推理步骤，并把推理过程写出来（这很重要）：**\n\n"
+                    f"**步骤1 - 目标识别：** 用户的最终目标是什么？（例如「去洗车」→ 目标是让车被洗干净）\n"
+                    f"**步骤2 - 前提分析：** 达成目标需要哪些不可或缺的物理前提？（例如洗车→车本身必须到达洗车店）\n"
+                    f"**步骤3 - 可行性验证：** 如果按照我想给出的建议去做，在物理世界中能否真正达成目标？"
+                    f"做一次完整的心理模拟，一步步想象执行后会发生什么。\n"
+                    f"**步骤4 - 干扰项识别：** 问题中的数字（距离、价格、时间等）是否是干扰项？"
+                    f"先确认「能不能做到」，再讨论「怎么做更好」。\n\n"
+                    f"**先输出上述推理过程，然后给出最终回答。**",
                     system_prompt=NATURAL_LANGUAGE_PROMPT,
                 )
 
+            gen_todo[1]["status"] = "done"
             enable_review = task.metadata.get("enable_review", False)
 
             if enable_review:
-                # --- 步骤 2：先核查草稿（流式输出核查过程，用户可见） ---
+                gen_todo[2]["title"] = "核查验证"
+                gen_todo[2]["status"] = "running"
                 draft_elapsed = round(time.time() - task_start, 1)
                 await self.send_message(
                     content=f"草稿已生成（{draft_elapsed}s），**核查阶段** · 正在验证回答的准确性...",
                     team_id=task.team_id,
                     msg_type=MessageType.STATUS_UPDATE,
-                    metadata={"status": "working"},
+                    metadata={
+                        "status": "working",
+                        "monitor": self._build_monitor(
+                            task_type="general", todo=gen_todo,
+                            note="核查专家正在验证回答准确性...",
+                        ),
+                    },
                 )
 
                 review_result = await self._run_direct_answer_review(task, draft)
 
-                # --- 步骤 3：输出最终结论（核查后） ---
+                gen_todo[2]["status"] = "done"
+                gen_todo.append({"id": "output", "title": "输出最终回答", "status": "running"})
                 review_elapsed = round(time.time() - task_start, 1)
                 await self.send_message(
                     content=f"核查完成（{review_elapsed}s），正在输出最终回答...",
                     team_id=task.team_id,
                     msg_type=MessageType.STATUS_UPDATE,
-                    metadata={"status": "working"},
+                    metadata={
+                        "status": "working",
+                        "monitor": self._build_monitor(
+                            task_type="general", todo=gen_todo,
+                            note="正在输出最终回答...",
+                        ),
+                    },
                 )
 
                 # 基于核查结果生成最终回答
@@ -508,11 +571,20 @@ class TeamLeadAgent(AgentBase):
                 )
 
             total_elapsed = round(time.time() - task_start, 1)
+            for t in gen_todo:
+                t["status"] = "done"
             await self.send_message(
                 content=f"回答完成 · 耗时 **{total_elapsed}s**",
                 team_id=task.team_id,
                 msg_type=MessageType.STATUS_UPDATE,
-                metadata={"status": "completed", "total_elapsed": total_elapsed},
+                metadata={
+                    "status": "completed",
+                    "total_elapsed": total_elapsed,
+                    "monitor": self._build_monitor(
+                        task_type="general", todo=gen_todo,
+                        note="回答完成",
+                    ),
+                },
             )
 
             # 自动重命名对话
@@ -574,6 +646,9 @@ class TeamLeadAgent(AgentBase):
             await tm.save_team_to_db(team)
 
         # ========== 阶段 1：Round 1 - 独立分析 ==========
+        gen_todo[1]["status"] = "running"
+        gen_todo[1]["title"] = f"Round 1 · {len(experts)} 位专家独立分析"
+        expert_skills = [{"id": e["name"], "name": e["name"]} for e in experts]
         await self.send_message(
             content=(
                 f"**Round 1** · {len(experts)} 位专家开始分析..."
@@ -582,7 +657,14 @@ class TeamLeadAgent(AgentBase):
             ),
             team_id=task.team_id,
             msg_type=MessageType.STATUS_UPDATE,
-            metadata={"status": "working"},
+            metadata={
+                "status": "working",
+                "monitor": self._build_monitor(
+                    task_type="general", todo=gen_todo,
+                    note=f"{len(experts)} 位专家正在独立分析...",
+                    skills=expert_skills,
+                ),
+            },
         )
 
         r1_results_raw = await self._run_round1_with_dependencies(experts, task)
@@ -610,11 +692,21 @@ class TeamLeadAgent(AgentBase):
         # ========== 阶段 2：Round 2 - 协作讨论（仅多专家时执行） ==========
         r2_completed: list[TaskResult] = []
         if len(r1_completed) > 1:
+            gen_todo[1]["status"] = "done"
+            gen_todo.insert(2, {"id": "discuss", "title": "Round 2 · 协作讨论", "status": "running"})
+            # 更新后面的生成报告索引
             await self.send_message(
                 content=f"**Round 2** · 初步分析完成（{r1_elapsed}s），专家进入协作讨论...",
                 team_id=task.team_id,
                 msg_type=MessageType.STATUS_UPDATE,
-                metadata={"status": "working"},
+                metadata={
+                    "status": "working",
+                    "monitor": self._build_monitor(
+                        task_type="general", todo=gen_todo,
+                        note="专家正在协作讨论...",
+                        skills=expert_skills,
+                    ),
+                },
             )
 
             r2_coros = [
@@ -639,6 +731,11 @@ class TeamLeadAgent(AgentBase):
         review_completed: list[TaskResult] = []
 
         if enable_review:
+            # 标记讨论阶段完成，添加核查阶段
+            for t in gen_todo:
+                if t["id"] == "discuss":
+                    t["status"] = "done"
+            gen_todo.insert(-1, {"id": "review", "title": "领域核查", "status": "running"})
             review_elapsed_label = (
                 f"{round(time.time() - task_start, 1)}s"
             )
@@ -646,7 +743,14 @@ class TeamLeadAgent(AgentBase):
                 content=f"**核查阶段** · 领域核查专家开始验证 {len(r1_completed)} 份分析结果（{review_elapsed_label}）...",
                 team_id=task.team_id,
                 msg_type=MessageType.STATUS_UPDATE,
-                metadata={"status": "working"},
+                metadata={
+                    "status": "working",
+                    "monitor": self._build_monitor(
+                        task_type="general", todo=gen_todo,
+                        note=f"核查专家正在验证 {len(r1_completed)} 份分析结果...",
+                        skills=expert_skills,
+                    ),
+                },
             )
 
             # 为每位专家匹配其 Round 1 和 Round 2 的结果
@@ -674,15 +778,33 @@ class TeamLeadAgent(AgentBase):
 
             review_done_elapsed = round(time.time() - task_start, 1)
             status_text = f"领域核查完成（{review_done_elapsed}s），正在生成最终报告..."
+            for t in gen_todo:
+                if t["id"] == "review":
+                    t["status"] = "done"
         else:
-            status_text = f"正在生成最终报告..."
+            status_text = "正在生成最终报告..."
+            # 标记 round1 / discuss 完成
+            for t in gen_todo:
+                if t["id"] in ("execute", "discuss"):
+                    t["status"] = "done"
 
         # ========== 阶段 4：最终汇总 ==========
+        # 找到 "生成报告" todo 并标记运行中
+        for t in gen_todo:
+            if t["id"] == "summarize":
+                t["status"] = "running"
         await self.send_message(
             content=status_text,
             team_id=task.team_id,
             msg_type=MessageType.STATUS_UPDATE,
-            metadata={"status": "working"},
+            metadata={
+                "status": "working",
+                "monitor": self._build_monitor(
+                    task_type="general", todo=gen_todo,
+                    note="正在生成最终报告...",
+                    skills=expert_skills,
+                ),
+            },
         )
 
         summary = await self._summarize_stream(
@@ -692,6 +814,8 @@ class TeamLeadAgent(AgentBase):
         # 完成状态
         total_elapsed = round(time.time() - task_start, 1)
         total_tokens += max(len(summary) * 2 // 3, 1)
+        for t in gen_todo:
+            t["status"] = "done"
 
         await self.send_message(
             content=(
@@ -705,6 +829,11 @@ class TeamLeadAgent(AgentBase):
                 "total_elapsed": total_elapsed,
                 "total_tokens": total_tokens,
                 "skills_used": skills_used,
+                "monitor": self._build_monitor(
+                    task_type="general", todo=gen_todo,
+                    note="任务完成",
+                    skills=expert_skills,
+                ),
             },
         )
 
@@ -719,6 +848,459 @@ class TeamLeadAgent(AgentBase):
             task_id=task.id, agent_name=self.name,
             status=TaskStatus.COMPLETED, content=summary,
         )
+
+    def _is_file_organize_task(self, task: Task) -> bool:
+        scene_category = str(task.metadata.get("scene_category", ""))
+        scene_type = str(task.metadata.get("scene_type", ""))
+        if scene_category == "file_organize" or scene_type.startswith("file_organize"):
+            return True
+
+        text = f"{task.title}\n{task.description}".lower()
+        return "文件整理" in text or "整理文件" in text
+
+    # ---------- 通用任务监控 ----------
+    @staticmethod
+    def _build_monitor(
+        task_type: str,
+        todo: list[dict],
+        note: str = "",
+        skills: list[dict] | None = None,
+        artifacts: list[dict] | None = None,
+        **extras: object,
+    ) -> dict:
+        """构建通用 monitor payload，todo/skills 会做快照防止引用突变。"""
+        result: dict = {
+            "task_type": task_type,
+            "note": note,
+            "todo": [dict(item) for item in (todo or [])],
+            "skills": [dict(item) for item in (skills or [])],
+            "artifacts": list(artifacts or []),
+        }
+        result.update(extras)
+        return result
+
+    def _build_file_monitor(
+        self,
+        workspace: str,
+        todo: list[dict],
+        note: str = "",
+        skills: list[dict] | None = None,
+        artifacts_extra: list[dict] | None = None,
+        pending_confirm: bool = False,
+        preview_plan: dict | None = None,
+        organize_goal: str = "",
+        goal_suggestions: list[dict] | None = None,
+    ) -> dict:
+        artifacts = [
+            {
+                "id": "workspace",
+                "name": "默认工作目录",
+                "path": workspace,
+                "type": "folder",
+                "openable": True,
+            }
+        ]
+        if artifacts_extra:
+            artifacts.extend(artifacts_extra)
+        extras: dict = {"workspace": workspace}
+        if pending_confirm:
+            extras["pending_confirm"] = True
+        if preview_plan:
+            extras["preview_plan"] = preview_plan
+        if organize_goal:
+            extras["organize_goal"] = organize_goal
+        if goal_suggestions:
+            extras["goal_suggestions"] = goal_suggestions
+        return self._build_monitor(
+            task_type="file_organize",
+            todo=todo,
+            note=note,
+            skills=skills,
+            artifacts=artifacts,
+            **extras,
+        )
+
+    def _extract_path_from_text(self, text: str) -> str:
+        # 支持 ~/xxx、/xxx、./xxx、../xxx 四类路径
+        match = re.search(r"((?:~|/|\.{1,2}/)[^\s，,。；;]+)", text or "")
+        return match.group(1) if match else ""
+
+    def _build_goal_suggestions(self, organize_goal: str, category_counts: dict[str, int]) -> list[dict]:
+        top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        top_text = "、".join(name for name, _ in top_categories) or "常见文件"
+        suggestions = [
+            {
+                "id": "by_type",
+                "title": "按文件类型整理（推荐）",
+                "goal": "按文件类型自动分类",
+                "reason": f"当前目录以 {top_text} 为主，类型分类最稳妥。",
+            },
+            {
+                "id": "by_time",
+                "title": "按时间（月）整理",
+                "goal": "按修改时间按月分类",
+                "reason": "适合下载目录和临时资料，便于回溯近期文件。",
+            },
+            {
+                "id": "by_topic",
+                "title": "按主题关键词整理",
+                "goal": "按主题内容分类",
+                "reason": "适合报告、项目资料等内容导向文件。",
+            },
+        ]
+        # 只有当用户目标与内置选项不重复时才插入，避免同一 goal 文本出现两次
+        builtin_goals = {s["goal"] for s in suggestions}
+        if organize_goal and organize_goal not in builtin_goals:
+            suggestions.insert(
+                0,
+                {
+                    "id": "user_goal",
+                    "title": "使用你填写的整理目标",
+                    "goal": organize_goal,
+                    "reason": "你已提供明确目标，可优先按该目标执行。",
+                },
+            )
+        return suggestions[:4]
+
+    async def _execute_file_organize_task(self, task: Task, task_start: float) -> TaskResult:
+        form_data = task.metadata.get("scene_form_data", {}) or {}
+        if not isinstance(form_data, dict):
+            form_data = {}
+
+        folder_scope = str(form_data.get("folder_scope", "")).strip()
+        organize_goal = str(form_data.get("organize_goal", "")).strip()
+        # 确认执行标志：从监控面板点击确认后触发
+        confirm_execute = task.metadata.get("confirm_execute", False)
+        # 文件整理统一为：先预览，用户点击确认后再执行
+        force_execute = bool(confirm_execute)
+        if not folder_scope:
+            folder_scope = self._extract_path_from_text(task.description)
+
+        if not folder_scope:
+            msg = "未检测到待整理目录，请在场景表单中填写“待整理目录”后重试。"
+            await self.send_message(
+                content=msg,
+                team_id=task.team_id,
+                msg_type=MessageType.TASK_RESULT,
+                metadata={"status_label": "FAILED", "error": True},
+            )
+            await self.send_message(
+                content="文件整理任务失败",
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={"status": "completed", "error": True},
+            )
+            return TaskResult(
+                task_id=task.id,
+                agent_name=self.name,
+                status=TaskStatus.FAILED,
+                content=msg,
+            )
+
+        from pathlib import Path
+        target_dir = str(Path(folder_scope).expanduser().resolve())
+        goal_label = organize_goal or "按文件类型自动分类（系统建议）"
+
+        todo = [
+            {
+                "id": "analyze",
+                "title": "分析文件名称和结构，确定分类方案",
+                "status": "pending",
+                "detail": "等待开始",
+            },
+            {
+                "id": "organize",
+                "title": "创建子文件夹并移动文件",
+                "status": "pending",
+                "detail": "等待开始",
+            },
+            {
+                "id": "verify",
+                "title": "验证整理结果，确认无文件丢失",
+                "status": "pending",
+                "detail": "等待开始",
+            },
+        ]
+        skills = [{"name": "本地文件整理", "status": "active"}]
+
+        try:
+            stage_begin = time.monotonic()
+            todo[0]["status"] = "running"
+            todo[0]["detail"] = "正在扫描目录结构与文件类型..."
+            await self.send_message(
+                content="文件整理任务已启动，正在分析目录结构...",
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={
+                    "status": "working",
+                    "monitor": self._build_file_monitor(
+                        workspace=target_dir,
+                        todo=todo,
+                        note=(
+                            "仅执行创建目录与移动文件，禁止删除。"
+                            if organize_goal
+                            else "未提供整理目标，已先按文件类型给出建议方案。"
+                        ),
+                        skills=skills,
+                    ),
+                },
+            )
+
+            # 保证用户能看到分析阶段，不会“瞬间跳到完成”
+            min_analyze_stage = 1.0
+            elapsed_analyze = time.monotonic() - stage_begin
+            if elapsed_analyze < min_analyze_stage:
+                await asyncio.sleep(min_analyze_stage - elapsed_analyze)
+
+            todo[0]["status"] = "done"
+            todo[0]["detail"] = "目录分析完成"
+            todo[1]["status"] = "running"
+            todo[1]["detail"] = (
+                "正在生成整理预览方案..."
+                if not force_execute
+                else "正在创建子目录并移动文件..."
+            )
+            stage2_text = (
+                "已完成分析，正在生成整理预览方案..."
+                if not force_execute
+                else "已完成分析，正在创建子文件夹并移动文件..."
+            )
+            await self.send_message(
+                content=stage2_text,
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={
+                    "status": "working",
+                    "monitor": self._build_file_monitor(
+                        workspace=target_dir,
+                        todo=todo,
+                        note="执行中：禁止删除文件，仅移动与重命名冲突文件。",
+                        skills=skills,
+                    ),
+                },
+            )
+
+            if not force_execute:
+                preview_stage_begin = time.monotonic()
+                plan = await asyncio.to_thread(
+                    preview_organize_plan,
+                    target_dir,
+                    organize_goal,
+                )
+                goal_suggestions = self._build_goal_suggestions(organize_goal, plan.category_counts)
+                min_preview_stage = 1.0
+                elapsed_preview = time.monotonic() - preview_stage_begin
+                if elapsed_preview < min_preview_stage:
+                    await asyncio.sleep(min_preview_stage - elapsed_preview)
+                todo[1]["status"] = "pending"
+                todo[1]["detail"] = "预览已生成，等待确认执行"
+                todo[2]["status"] = "pending"
+                todo[2]["detail"] = "等待执行完成后校验"
+                plan_lines = [
+                    f"- {name}: {count} 个"
+                    for name, count in sorted(
+                        plan.category_counts.items(),
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )
+                ] or ["- 无可整理文件（目录可能为空）"]
+
+                sample_lines = [
+                    f"- `{item['source']}` -> `{item['target']}`"
+                    for item in plan.sample_moves[:8]
+                ]
+                if not sample_lines:
+                    sample_lines = ["- 无示例迁移项"]
+
+                summary = (
+                    "文件整理预览完成（未执行任何文件操作）。\n\n"
+                    f"目录：`{plan.root_dir}`\n"
+                    f"目标：{goal_label}\n"
+                    f"可整理文件：{plan.total_files} 个\n\n"
+                    "分类预估：\n" + "\n".join(plan_lines) + "\n\n"
+                    "示例迁移：\n" + "\n".join(sample_lines) + "\n\n"
+                    "建议整理目标（可在右侧面板选择后确认执行）：\n"
+                    + "\n".join(
+                        [
+                            f"- {item['title']}：{item['goal']}（{item['reason']}）"
+                            for item in goal_suggestions
+                        ]
+                    )
+                    + "\n\n"
+                    "如确认执行，请点击右侧任务监控面板中的“确认执行”。"
+                )
+
+                await self.stream_text(
+                    text=summary,
+                    team_id=task.team_id,
+                    msg_type=MessageType.TASK_RESULT,
+                    metadata={"status_label": "A_OK", "file_organize_preview": plan.to_dict()},
+                )
+                total_elapsed = round(time.time() - task_start, 1)
+                await self.send_message(
+                    content=f"文件整理建议方案完成· 耗时 **{total_elapsed}s**",
+                    team_id=task.team_id,
+                    msg_type=MessageType.STATUS_UPDATE,
+                    metadata={
+                        "status": "pending_confirm",
+                        "total_elapsed": total_elapsed,
+                        "monitor": self._build_file_monitor(
+                            workspace=target_dir,
+                            todo=todo,
+                            note="预览完成：请确认是否执行文件整理",
+                            skills=skills,
+                            pending_confirm=True,
+                            preview_plan=plan.to_dict(),
+                            organize_goal=organize_goal,
+                            goal_suggestions=goal_suggestions,
+                        ),
+                    },
+                )
+                return TaskResult(
+                    task_id=task.id,
+                    agent_name=self.name,
+                    status=TaskStatus.COMPLETED,
+                    content=summary,
+                    metadata={
+                        "file_organize_preview": plan.to_dict(),
+                        "pending_confirm": True,
+                        "preview_plan": plan.to_dict(),
+                        "organize_goal": organize_goal,
+                        "goal_suggestions": goal_suggestions,
+                    },
+                )
+
+            # 用户确认执行后，直接执行整理
+            stage2_begin = time.monotonic()
+            report = await asyncio.to_thread(
+                organize_directory_safe,
+                target_dir,
+                organize_goal,
+            )
+
+            min_organize_stage = 0.8
+            elapsed_organize = time.monotonic() - stage2_begin
+            if elapsed_organize < min_organize_stage:
+                await asyncio.sleep(min_organize_stage - elapsed_organize)
+
+            todo[1]["status"] = "done"
+            todo[1]["detail"] = f"已完成文件移动（{report.moved_files}/{report.total_files}）"
+            todo[2]["status"] = "running"
+            todo[2]["detail"] = "正在校验文件数量与总大小..."
+            await self.send_message(
+                content="正在验证整理结果，检查是否存在文件丢失...",
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={
+                    "status": "working",
+                    "monitor": self._build_file_monitor(
+                        workspace=target_dir,
+                        todo=todo,
+                        note="正在校验文件数量与总大小。",
+                        skills=skills,
+                    ),
+                },
+            )
+            todo[2]["status"] = "done" if report.verify_ok else "failed"
+            todo[2]["detail"] = report.verify_note
+
+            category_lines = [
+                f"- {name}: {count} 个"
+                for name, count in sorted(
+                    report.category_counts.items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+            ]
+            if not category_lines:
+                category_lines = ["- 无可整理文件（目录可能为空或仅包含子目录）"]
+
+            summary = (
+                f"文件整理完成（禁止删除模式）。\n\n"
+                f"目录：`{report.root_dir}`\n"
+                f"目标：{goal_label}\n"
+                f"扫描文件：{report.total_files} 个\n"
+                f"已移动：{report.moved_files} 个\n"
+                f"创建子目录：{len(report.created_dirs)} 个\n"
+                f"同名冲突重命名：{report.collisions} 次\n\n"
+                f"分类结果：\n" + "\n".join(category_lines) + "\n\n"
+                f"校验：{report.verify_note}"
+            )
+
+            await self.stream_text(
+                text=summary,
+                team_id=task.team_id,
+                msg_type=MessageType.TASK_RESULT,
+                metadata={
+                    "status_label": "A_OK",
+                    "file_organize": report.to_dict(),
+                },
+            )
+
+            total_elapsed = round(time.time() - task_start, 1)
+            await self.send_message(
+                content=f"文件整理完成 · 耗时 **{total_elapsed}s**",
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={
+                    "status": "completed",
+                    "total_elapsed": total_elapsed,
+                    "monitor": self._build_file_monitor(
+                        workspace=target_dir,
+                        todo=todo,
+                        note=report.verify_note,
+                        skills=skills,
+                        artifacts_extra=[
+                            {
+                                "id": f"category-{idx}",
+                                "name": f"分类目录：{name}",
+                                "path": f"{target_dir}/{name}",
+                                "type": "folder",
+                                "openable": True,
+                            }
+                            for idx, name in enumerate(sorted(report.category_counts.keys())[:6], start=1)
+                        ],
+                    ),
+                },
+            )
+            await self._auto_rename_team(task)
+            return TaskResult(
+                task_id=task.id,
+                agent_name=self.name,
+                status=TaskStatus.COMPLETED,
+                content=summary,
+                metadata={"file_organize": report.to_dict()},
+            )
+        except Exception as e:
+            logger.error(f"[{self.name}] 文件整理失败: {e}")
+            todo[0]["status"] = "failed"
+            await self.send_message(
+                content=f"文件整理任务失败: {str(e)}",
+                team_id=task.team_id,
+                msg_type=MessageType.TASK_RESULT,
+                metadata={"status_label": "FAILED", "error": True},
+            )
+            await self.send_message(
+                content="文件整理任务失败",
+                team_id=task.team_id,
+                msg_type=MessageType.STATUS_UPDATE,
+                metadata={
+                    "status": "completed",
+                    "error": True,
+                    "monitor": self._build_file_monitor(
+                        workspace=target_dir,
+                        todo=todo,
+                        note="执行失败，请检查目录权限或路径是否有效。",
+                        skills=skills,
+                    ),
+                },
+            )
+            return TaskResult(
+                task_id=task.id,
+                agent_name=self.name,
+                status=TaskStatus.FAILED,
+                content=f"文件整理任务失败: {str(e)}",
+            )
 
     # ================================================================
     #  自动重命名对话
@@ -1067,8 +1649,22 @@ class TeamLeadAgent(AgentBase):
         ]
 
         plan_text = ""
+        _PLAN_CHUNK_TIMEOUT = 60.0
         try:
-            async for chunk in self.llm.stream_chat(messages):
+            stream_iter = self.llm.stream_chat(messages).__aiter__()
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        stream_iter.__anext__(), timeout=_PLAN_CHUNK_TIMEOUT
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"[{self.name}] 规划流式超时（{_PLAN_CHUNK_TIMEOUT}s），"
+                        f"已收到 {len(plan_text)} 字符"
+                    )
+                    break
                 plan_text += chunk
                 await self.bus.publish(Message(
                     type=MessageType.STREAM_CHUNK,
@@ -1080,8 +1676,12 @@ class TeamLeadAgent(AgentBase):
         except Exception as e:
             logger.error(f"[{self.name}] 流式生成方案异常: {e}")
             if not plan_text:
-                response = await self.llm.chat(messages)
-                plan_text = response.content
+                try:
+                    response = await self.llm.chat(messages)
+                    plan_text = response.content
+                except Exception as fallback_err:
+                    logger.error(f"[{self.name}] 规划非流式降级也失败: {fallback_err}")
+                    plan_text = '{"thinking": "规划失败", "direct_answer": "抱歉，服务暂时不可用，请稍后重试。", "experts": []}'
 
         # 仅在 plan 对话历史中记录，保持上下文纯净（只有 JSON 格式的规划交互）
         self._plan_conversation.append(

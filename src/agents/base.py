@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -10,6 +11,9 @@ from loguru import logger
 from src.core.message_bus import Message, MessageBus, MessageType
 from src.core.task import Task, TaskResult, TaskStatus
 from src.llm.base import ChatMessage, LLMAdapter
+
+# 两个 chunk 之间最长等待时间（秒），超过则视为卡死
+_STREAM_CHUNK_TIMEOUT = 90.0
 
 
 class AgentBase:
@@ -197,12 +201,24 @@ class AgentBase:
         )
         await self.bus.publish(init_msg)
 
-        # 2. 流式输出
+        # 2. 流式输出（带 chunk 间超时保护）
         full_text = ""
         try:
-            async for chunk in self.llm.stream_chat(messages):
+            stream_iter = self.llm.stream_chat(messages).__aiter__()
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        stream_iter.__anext__(), timeout=_STREAM_CHUNK_TIMEOUT
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"[{self.name}] 流式输出超时（{_STREAM_CHUNK_TIMEOUT}s 无新 chunk），"
+                        f"已收到 {len(full_text)} 字符，强制结束"
+                    )
+                    break
                 full_text += chunk
-                # 发送流式片段（不持久化）
                 chunk_msg = Message(
                     type=MessageType.STREAM_CHUNK,
                     sender=self.name,
@@ -214,9 +230,12 @@ class AgentBase:
         except Exception as e:
             logger.error(f"[{self.name}] 流式输出异常: {e}")
             if not full_text:
-                # 降级到非流式
-                response = await self.llm.chat(messages)
-                full_text = response.content
+                try:
+                    response = await self.llm.chat(messages)
+                    full_text = response.content
+                except Exception as fallback_err:
+                    logger.error(f"[{self.name}] 非流式降级也失败: {fallback_err}")
+                    full_text = f"（生成失败: {e}）"
 
         # 3. 计算统计数据
         elapsed = round(time.time() - start_time, 1)
@@ -257,6 +276,79 @@ class AgentBase:
             self._conversation = self._conversation[-16:]
 
         return full_text
+
+    async def stream_text(
+        self,
+        text: str,
+        team_id: str = "",
+        msg_type: MessageType = MessageType.TASK_RESULT,
+        metadata: dict | None = None,
+        chunk_size: int = 56,
+    ) -> str:
+        """将现成文本按片段流式推送到前端（不经 LLM 改写）"""
+        import time
+        from uuid import uuid4
+
+        msg_id = uuid4().hex[:12]
+        meta = metadata or {}
+        start_time = time.time()
+
+        init_msg = Message(
+            id=msg_id,
+            type=msg_type,
+            sender=self.name,
+            team_id=team_id,
+            content="",
+            metadata={**meta, "streaming": True},
+        )
+        await self.bus.publish(init_msg)
+
+        if chunk_size <= 0:
+            chunk_size = 56
+
+        for i in range(0, len(text), chunk_size):
+            chunk = text[i:i + chunk_size]
+            await self.bus.publish(
+                Message(
+                    type=MessageType.STREAM_CHUNK,
+                    sender=self.name,
+                    team_id=team_id,
+                    content=chunk,
+                    metadata={"target_id": msg_id},
+                )
+            )
+            # 让用户可感知到流式输出过程
+            await asyncio.sleep(0.015)
+
+        elapsed = round(time.time() - start_time, 1)
+        est_tokens = max(len(text) * 2 // 3, 1)
+        await self.bus.update_message_content(
+            team_id,
+            msg_id,
+            text,
+            metadata_updates={
+                "streaming": False,
+                "elapsed": elapsed,
+                "est_tokens": est_tokens,
+                "char_count": len(text),
+            },
+        )
+        await self.bus.publish(
+            Message(
+                type=MessageType.STREAM_CHUNK,
+                sender=self.name,
+                team_id=team_id,
+                content="",
+                metadata={
+                    "target_id": msg_id,
+                    "stream_done": True,
+                    "elapsed": elapsed,
+                    "est_tokens": est_tokens,
+                    "char_count": len(text),
+                },
+            )
+        )
+        return text
 
     async def send_message(
         self,

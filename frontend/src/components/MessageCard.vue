@@ -131,7 +131,7 @@ async function submitInfoCard() {
       const display = Array.isArray(val) ? val.join('、') : val
       parts.push(`${field.label}：${display}`)
     }
-    const supplement = parts.join('\n').join(',')
+    const supplement = parts.join('\n')
     const fullDescription = `${originalTask.value}\n\n--- 用户补充信息 ---\n${supplement}`
 
     const res = await fetch('/api/tasks', {
@@ -323,6 +323,13 @@ const renderedContent = computed(() => {
       return `[${num}]`
     })
   }
+
+  // 将"示例迁移："标题 + 紧跟的列表包裹为可折叠 details 元素
+  html = html.replace(
+    /<p>示例迁移：<\/p>\n?(<ul>[\s\S]*?<\/ul>)/,
+    '<details class="inline-collapse"><summary>示例迁移（点击展开）</summary>\n$1</details>'
+  )
+
   return html
 })
 
@@ -1212,6 +1219,51 @@ function formatTokens(n: number): string {
 
 .markdown-body li {
   margin: 6px 0;
+}
+
+/* 示例迁移折叠块 */
+.markdown-body :deep(.inline-collapse) {
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 0;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.markdown-body :deep(.inline-collapse > summary) {
+  list-style: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  background: #f8f8f8;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markdown-body :deep(.inline-collapse > summary::before) {
+  content: '▶';
+  font-size: 10px;
+  color: #999;
+  transition: transform 0.2s;
+  display: inline-block;
+}
+
+.markdown-body :deep(.inline-collapse[open] > summary::before) {
+  transform: rotate(90deg);
+}
+
+.markdown-body :deep(.inline-collapse > summary::-webkit-details-marker) {
+  display: none;
+}
+
+.markdown-body :deep(.inline-collapse > ul) {
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  border-top: 1px solid #efefef;
 }
 
 .markdown-body li > p {

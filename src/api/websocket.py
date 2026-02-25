@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -62,8 +63,22 @@ manager = ConnectionManager()
 
 @ws_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket 端点"""
+    """WebSocket 端点（带服务端 keepalive 心跳）"""
     await manager.connect(websocket)
+
+    async def _server_heartbeat():
+        """服务端定时发送心跳，防止长时间任务期间连接被中间件/代理断开"""
+        try:
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    await websocket.send_text(json.dumps({"action": "heartbeat"}))
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(_server_heartbeat())
 
     try:
         while True:
@@ -82,3 +97,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    finally:
+        heartbeat_task.cancel()
