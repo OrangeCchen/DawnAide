@@ -9,13 +9,21 @@ import KnowledgeDraftPanel from './components/KnowledgeDraftPanel.vue'
 import NotesDraftPanel from './components/NotesDraftPanel.vue'
 import MemoryModal from './components/MemoryModal.vue'
 import WritingEditor from './components/WritingEditor.vue'
+import SkillMarketModal from './components/SkillMarketModal.vue'
 
 const store = useTeamStore()
 const activeTab = ref<'conversation' | 'knowledge' | 'notes'>('conversation')
 const memoryVisible = ref(false)
+const skillMarketVisible = ref(false)
+const openClawEnabled = ref(localStorage.getItem('openClawEnabled') === 'true')
 const chatPrefill = ref<{ id: number; text: string } | null>(null)
 
 const isEditorMode = computed(() => store.editorState.active)
+
+function toggleOpenClaw() {
+  openClawEnabled.value = !openClawEnabled.value
+  localStorage.setItem('openClawEnabled', String(openClawEnabled.value))
+}
 
 const tabItems: Array<{ key: 'conversation' | 'knowledge' | 'notes'; label: string }> = [
   { key: 'conversation', label: '对话' },
@@ -70,7 +78,19 @@ function handleFillChatInput(text: string) {
       <span class="title-text">Agent Teams</span>
 
       <div class="title-actions no-drag">
-        <button class="memory-btn" @click="memoryVisible = true">记忆</button>
+        <button class="action-btn skill-market-btn" @click="skillMarketVisible = true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          技能市场
+        </button>
+        <button
+          class="action-btn openclaw-btn"
+          :class="{ active: openClawEnabled }"
+          @click="toggleOpenClaw"
+        >
+          <span class="openclaw-dot" :class="{ on: openClawEnabled }"></span>
+          OpenClaw
+        </button>
+        <button class="action-btn memory-btn" @click="memoryVisible = true">记忆</button>
       </div>
     </div>
 
@@ -91,6 +111,7 @@ function handleFillChatInput(text: string) {
     </template>
 
     <MemoryModal v-if="memoryVisible" @close="memoryVisible = false" />
+    <SkillMarketModal v-if="skillMarketVisible" @close="skillMarketVisible = false" />
   </div>
 </template>
 
@@ -175,22 +196,57 @@ function handleFillChatInput(text: string) {
 .title-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
   min-width: 80px;
 }
 
-.memory-btn {
+.action-btn {
   border: 1px solid var(--border);
   background: var(--bg-primary);
-  color: var(--text-primary);
+  color: var(--text-secondary);
   border-radius: 8px;
   font-size: 12px;
   padding: 4px 10px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
-.memory-btn:hover {
-  border-color: var(--accent-color);
-  color: var(--accent-color);
+.action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.skill-market-btn svg {
+  flex-shrink: 0;
+}
+
+.openclaw-btn {
+  position: relative;
+}
+
+.openclaw-btn.active {
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+  background: rgba(52, 199, 89, 0.06);
+}
+
+.openclaw-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.openclaw-dot.on {
+  background: var(--accent-green);
+  box-shadow: 0 0 4px rgba(52, 199, 89, 0.5);
 }
 
 .editor-fullscreen {
