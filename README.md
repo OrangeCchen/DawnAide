@@ -3,6 +3,7 @@
 ## 1. 系统定位与目标
 
 `AgentTeams` 是一个多 Agent 协作平台 POC，核心目标是将用户任务自动转化为"团队协作流程"：
+<img width="1909" height="876" alt="image" src="https://github.com/user-attachments/assets/1f227c0f-e1ae-4d83-afc1-12c378cdff5d" />
 
 - 由 `team-lead` 统一分析任务并制定执行策略。
 - 按任务复杂度动态生成 1~4 位专家并行执行。
