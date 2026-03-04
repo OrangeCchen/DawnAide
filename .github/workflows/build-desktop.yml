@@ -101,6 +101,12 @@ jobs:
           mkdir -p ../desktop/src-tauri/sidecar
           cp dist/agentteams-runtime-* ../desktop/src-tauri/sidecar/
 
+      # 安装桌面前端依赖
+      - name: Install Desktop Dependencies
+        run: |
+          cd client/desktop
+          npm install
+
       # 构建 Tauri 桌面应用
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
