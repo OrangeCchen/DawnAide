@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from src.config import DATA_DIR, get_settings
+from src.config import DATA_DIR, WRITABLE_DATA_DIR, get_settings
 
 
 async def initialize_app():
@@ -127,7 +127,8 @@ def _ensure_directories():
         DATA_DIR / "methodologies",
         DATA_DIR / "skills",
         DATA_DIR / "scenes",
-        DATA_DIR / "exports",
+        WRITABLE_DATA_DIR / "exports",
+        WRITABLE_DATA_DIR,
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)

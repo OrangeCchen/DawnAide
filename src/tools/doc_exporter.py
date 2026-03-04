@@ -15,9 +15,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, Pt, RGBColor
 from loguru import logger
 
-from src.config import DATA_DIR
+from src.config import WRITABLE_DATA_DIR
 
-EXPORT_DIR = DATA_DIR / "exports"
+EXPORT_DIR = WRITABLE_DATA_DIR / "exports"
 
 
 def export_markdown_to_word(

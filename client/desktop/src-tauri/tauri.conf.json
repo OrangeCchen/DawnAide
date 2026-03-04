@@ -35,6 +35,10 @@
       "icons/icon.ico"
     ],
     "targets": "all",
+    "externalBin": [
+      "sidecar/agentteams-backend",
+      "sidecar/agentteams-runtime"
+    ],
     "macOS": {
       "minimumSystemVersion": "10.15",
       "signingIdentity": null

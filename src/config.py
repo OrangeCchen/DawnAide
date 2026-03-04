@@ -3,15 +3,44 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-# 项目根目录
-ROOT_DIR = Path(__file__).resolve().parent.parent
+
+def _is_frozen() -> bool:
+    """是否以 PyInstaller 打包方式运行（sidecar 模式）"""
+    return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
+def _get_bundle_dir() -> Path:
+    """获取项目根目录（正常运行）或打包数据目录（sidecar 模式）"""
+    if _is_frozen():
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent.parent
+
+
+# 静态数据目录（YAML 配置文件，sidecar 模式下来自打包目录）
+ROOT_DIR = _get_bundle_dir()
 DATA_DIR = ROOT_DIR / "data"
+
+# 用户可写数据目录（数据库、导出文件等，始终位于用户主目录）
+USER_HOME_DIR = Path.home() / ".agentteams"
+WRITABLE_DATA_DIR = USER_HOME_DIR / "data" if _is_frozen() else DATA_DIR
+
+
+def _get_env_file() -> str | None:
+    """查找 .env 文件：优先用户主目录，其次项目根目录"""
+    user_env = USER_HOME_DIR / ".env"
+    if user_env.exists():
+        return str(user_env)
+    if _is_frozen():
+        return None  # sidecar 模式下无项目根目录
+    project_env = ROOT_DIR / ".env"
+    return str(project_env) if project_env.exists() else None
 
 
 class LLMSettings(BaseSettings):
@@ -46,17 +75,17 @@ class LLMSettings(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen2.5:14b", alias="OLLAMA_MODEL")
 
-    model_config = {"env_file": str(ROOT_DIR / ".env"), "extra": "ignore"}
+    model_config = {"env_file": _get_env_file(), "extra": "ignore"}
 
 
 class ServerSettings(BaseSettings):
     """服务器配置"""
 
-    host: str = Field(default="0.0.0.0", alias="HOST")
+    host: str = Field(default="127.0.0.1", alias="HOST")
     port: int = Field(default=8000, alias="PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    model_config = {"env_file": str(ROOT_DIR / ".env"), "extra": "ignore"}
+    model_config = {"env_file": _get_env_file(), "extra": "ignore"}
 
 
 class QdrantSettings(BaseSettings):
@@ -70,7 +99,7 @@ class QdrantSettings(BaseSettings):
     # 本地文件存储路径
     storage_path: str = Field(default="data/kb_files", alias="KB_STORAGE_PATH")
 
-    model_config = {"env_file": str(ROOT_DIR / ".env"), "extra": "ignore"}
+    model_config = {"env_file": _get_env_file(), "extra": "ignore"}
 
 
 class TTSettings(BaseSettings):
@@ -81,7 +110,7 @@ class TTSettings(BaseSettings):
     spark_api_secret: str = Field(default="", alias="SPARK_TTS_API_SECRET")
     spark_ttsvoice: str = Field(default="xiaoyan", alias="SPARK_TTS_VOICE")  # 讯飞语音主播
 
-    model_config = {"env_file": str(ROOT_DIR / ".env"), "extra": "ignore"}
+    model_config = {"env_file": _get_env_file(), "extra": "ignore"}
 
 
 class MemorySettings(BaseSettings):
@@ -111,7 +140,7 @@ class AppSettings(BaseSettings):
     tts: TTSettings = Field(default_factory=TTSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
 
-    model_config = {"env_file": str(ROOT_DIR / ".env"), "extra": "ignore"}
+    model_config = {"env_file": _get_env_file(), "extra": "ignore"}
 
 
 # 全局单例

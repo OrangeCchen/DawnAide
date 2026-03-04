@@ -12,9 +12,9 @@ from pathlib import Path
 import aiosqlite
 from loguru import logger
 
-from src.config import DATA_DIR
+from src.config import WRITABLE_DATA_DIR
 
-DB_PATH = DATA_DIR / "agent_teams.db"
+DB_PATH = WRITABLE_DATA_DIR / "agent_teams.db"
 
 
 class Database:
