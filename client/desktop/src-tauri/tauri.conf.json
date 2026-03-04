@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "identifier": "com.agentteams.desktop",
   "build": {
-    "frontendDist": "../../../frontend/dist",
-    "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "",
-    "beforeDevCommand": ""
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev"
   },
   "app": {
     "windows": [
