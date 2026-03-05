@@ -101,6 +101,13 @@ jobs:
           mkdir -p ../desktop/src-tauri/sidecar
           cp dist/agentteams-runtime-* ../desktop/src-tauri/sidecar/
 
+      # 构建 Vue 前端（backend sidecar 需要捆绑静态文件）
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
       # 构建 Backend sidecar（主 FastAPI 后端，端口 8000）
       - name: Build Backend Sidecar
         shell: bash
@@ -114,6 +121,7 @@ jobs:
           pyinstaller --onefile \
             --name "agentteams-backend-${{ matrix.rust-target }}" \
             --add-data "data:data" \
+            --add-data "frontend/dist:frontend/dist" \
             --paths "." \
             --hidden-import "uvicorn.logging" \
             --hidden-import "uvicorn.lifespan" \
@@ -128,7 +136,7 @@ jobs:
             --hidden-import "yaml" \
             --hidden-import "ddgs" \
             --clean --noconfirm \
-            src/main.py
+            sidecar_backend.py
           cp "dist/agentteams-backend-${{ matrix.rust-target }}" \
             client/desktop/src-tauri/sidecar/
 
