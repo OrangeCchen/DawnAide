@@ -24,30 +24,34 @@ pub fn run() {
         .manage(SidecarProcesses(Mutex::new(vec![])))
         .invoke_handler(tauri::generate_handler![get_runtime_url, get_backend_url])
         .setup(|app| {
-            let processes = app.state::<SidecarProcesses>();
+            // Release 模式才自动启动 sidecar（dev 模式服务已由 dev.sh 单独启动）
+            #[cfg(not(debug_assertions))]
+            {
+                let processes = app.state::<SidecarProcesses>();
 
-            // 启动主后端服务（FastAPI，端口 8000）
-            match app.shell().sidecar("agentteams-backend") {
-                Ok(cmd) => match cmd.spawn() {
-                    Ok((_rx, child)) => {
-                        processes.0.lock().unwrap().push(child);
-                        log::info!("agentteams-backend sidecar 已启动");
-                    }
-                    Err(e) => log::error!("启动 agentteams-backend 失败: {e}"),
-                },
-                Err(e) => log::error!("找不到 agentteams-backend sidecar: {e}"),
-            }
+                // 启动主后端服务（FastAPI，端口 8000）
+                match app.shell().sidecar("agentteams-backend") {
+                    Ok(cmd) => match cmd.spawn() {
+                        Ok((_rx, child)) => {
+                            processes.0.lock().unwrap().push(child);
+                            log::info!("agentteams-backend sidecar 已启动");
+                        }
+                        Err(e) => log::error!("启动 agentteams-backend 失败: {e}"),
+                    },
+                    Err(e) => log::error!("找不到 agentteams-backend sidecar: {e}"),
+                }
 
-            // 启动 Client Runtime（本地能力服务，端口 19800）
-            match app.shell().sidecar("agentteams-runtime") {
-                Ok(cmd) => match cmd.spawn() {
-                    Ok((_rx, child)) => {
-                        processes.0.lock().unwrap().push(child);
-                        log::info!("agentteams-runtime sidecar 已启动");
-                    }
-                    Err(e) => log::error!("启动 agentteams-runtime 失败: {e}"),
-                },
-                Err(e) => log::error!("找不到 agentteams-runtime sidecar: {e}"),
+                // 启动 Client Runtime（本地能力服务，端口 19800）
+                match app.shell().sidecar("agentteams-runtime") {
+                    Ok(cmd) => match cmd.spawn() {
+                        Ok((_rx, child)) => {
+                            processes.0.lock().unwrap().push(child);
+                            log::info!("agentteams-runtime sidecar 已启动");
+                        }
+                        Err(e) => log::error!("启动 agentteams-runtime 失败: {e}"),
+                    },
+                    Err(e) => log::error!("找不到 agentteams-runtime sidecar: {e}"),
+                }
             }
 
             #[cfg(debug_assertions)]

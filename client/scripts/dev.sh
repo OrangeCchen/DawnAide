@@ -55,7 +55,9 @@ sleep 3
 if [ -d "$DESKTOP_DIR/node_modules" ]; then
     echo "[4/4] 启动 Tauri 开发窗口..."
     cd "$DESKTOP_DIR"
-    npm run tauri:dev &
+    # Dev 模式：后端和 Runtime 已单独启动，无需打包 sidecar 二进制
+    # 用 TAURI_CONFIG 临时覆盖 externalBin 为空，跳过 sidecar 路径校验
+    TAURI_CONFIG='{"bundle":{"externalBin":[]}}' npm run tauri:dev &
 else
     echo "[4/4] 跳过 Tauri（未安装依赖）。仅启动 Web 模式。"
 fi
