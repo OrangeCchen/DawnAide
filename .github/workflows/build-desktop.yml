@@ -105,10 +105,16 @@ jobs:
       - name: Build Backend Sidecar
         shell: bash
         run: |
-          pip install -e ".[dev]" pyinstaller
-          pyinstaller --onefile --name "agentteams-backend-${{ matrix.rust-target }}" \
+          pip install pyinstaller \
+            fastapi "uvicorn[standard]" websockets \
+            pydantic "pydantic-settings" httpx \
+            pyyaml python-dotenv loguru \
+            openai tiktoken aiosqlite \
+            jinja2 markdown ddgs beautifulsoup4 python-docx
+          pyinstaller --onefile \
+            --name "agentteams-backend-${{ matrix.rust-target }}" \
             --add-data "data:data" \
-            --add-data "src:src" \
+            --paths "." \
             --hidden-import "uvicorn.logging" \
             --hidden-import "uvicorn.lifespan" \
             --hidden-import "uvicorn.lifespan.on" \
@@ -123,7 +129,8 @@ jobs:
             --hidden-import "ddgs" \
             --clean --noconfirm \
             src/main.py
-          cp dist/agentteams-backend-* client/desktop/src-tauri/sidecar/
+          cp "dist/agentteams-backend-${{ matrix.rust-target }}" \
+            client/desktop/src-tauri/sidecar/
 
       # 安装桌面前端依赖
       - name: Install Desktop Dependencies
